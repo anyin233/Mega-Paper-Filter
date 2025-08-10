@@ -11,6 +11,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 from loguru import logger
+from .google_scholar_extractor import GoogleScholarExtractor
 
 
 class AbstractExtractor:
@@ -19,23 +20,30 @@ class AbstractExtractor:
     Enhanced with comprehensive anti-spider protection and debugging capabilities.
     """
     
-    def __init__(self, headless: bool = False, timeout: int = 20, debug: bool = False):
+    def __init__(self, headless: bool = False, timeout: int = 20, debug: bool = False, 
+                 use_google_scholar: bool = True, scholar_mirror: str = 'default'):
         """
         Initialize the AbstractExtractor with enhanced anti-spider protection.
         
         :param headless: Whether to run the browser in headless mode (default: False for debugging)
         :param timeout: Timeout for web element waits (increased default for dynamic content)
         :param debug: Enable debug mode with shorter timeouts for testing
+        :param use_google_scholar: Use Google Scholar as primary source (recommended)
+        :param scholar_mirror: Google Scholar mirror to use ('default', 'mirror1', etc.)
         """
         self.headless = headless
         self.timeout = timeout if not debug else 5  # Shorter timeout for debug mode
         self.debug = debug
         self.driver = None
+        self.use_google_scholar = use_google_scholar
+        self.scholar_mirror = scholar_mirror
         
         if debug:
             logger.info("🐛 Debug mode enabled: Using shorter timeouts and verbose logging")
         if not headless:
             logger.info("🖥️  Browser window will be visible for debugging")
+        if use_google_scholar:
+            logger.info(f"📚 Google Scholar mode enabled using mirror: {scholar_mirror}")
     
     def _setup_driver(self):
         """Setup Chrome WebDriver with anti-detection options."""
@@ -535,6 +543,39 @@ class AbstractExtractor:
             logger.error(f"Error in fallback extraction: {str(e)}", exc_info=True)
             return None
     
+    def extract_abstract_from_paper_info(self, paper_title: str, authors: list = None) -> Optional[str]:
+        """
+        Extract abstract using Google Scholar search based on paper information.
+        
+        :param paper_title: Title of the paper
+        :param authors: List of author names
+        :return: Abstract text if found
+        """
+        if not self.use_google_scholar:
+            logger.debug("Google Scholar disabled, skipping")
+            return None
+        
+        try:
+            logger.info(f"🔍 Searching Google Scholar for: {paper_title[:60]}{'...' if len(paper_title) > 60 else ''}")
+            
+            with GoogleScholarExtractor(
+                headless=self.headless, 
+                timeout=self.timeout,
+                preferred_mirror=self.scholar_mirror
+            ) as scholar:
+                abstract = scholar.search_paper(paper_title, authors or [])
+                
+                if abstract:
+                    logger.info(f"✅ Google Scholar abstract found ({len(abstract)} chars)")
+                    return abstract
+                else:
+                    logger.warning("❌ No abstract found on Google Scholar")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Error extracting from Google Scholar: {str(e)}")
+            return None
+    
     def _human_like_page_load(self, url: str, wait_time: tuple = (3, 6)):
         """Load a page with comprehensive waiting for full content load."""
         logger.debug(f"Loading page with comprehensive waiting: {url}")
@@ -959,17 +1000,18 @@ class AbstractExtractor:
     def extract_abstracts_batch(self, papers: list, delay: float = 5.0) -> list:
         """
         Extract abstracts for a batch of papers with comprehensive anti-spider protection.
+        Uses Google Scholar as primary source, falls back to publisher sites.
         
         :param papers: List of PaperInfo objects
         :param delay: Base delay between requests (increased for anti-spider protection)
         :return: List of PaperInfo objects with abstracts populated
         """
-        logger.info(f"Starting batch abstract extraction for {len(papers)} papers (base delay: {delay}s)")
-        logger.info("Using comprehensive anti-spider protection with extended wait times")
+        logger.info(f"Starting batch abstract extraction for {len(papers)} papers")
         
-        if not self.driver:
-            logger.debug("WebDriver not initialized for batch processing, setting up driver...")
-            self._setup_driver()
+        if self.use_google_scholar:
+            logger.info("📚 Using Google Scholar as primary source")
+        else:
+            logger.info("🏢 Using publisher websites (IEEE/ACM)")
         
         updated_papers = []
         successful_extractions = 0
@@ -978,16 +1020,31 @@ class AbstractExtractor:
         try:
             for i, paper in enumerate(papers):
                 logger.info(f"Processing paper {i+1}/{len(papers)}: '{paper.title[:60]}{'...' if len(paper.title) > 60 else ''}'")
-                logger.debug(f"Paper URL: {paper.url}")
                 
                 start_time = time.time()
-                abstract = self.extract_abstract(paper.url)
+                abstract = None
+                
+                # Try Google Scholar first if enabled
+                if self.use_google_scholar:
+                    logger.debug("🔍 Trying Google Scholar...")
+                    abstract = self.extract_abstract_from_paper_info(paper.title, paper.authors)
+                
+                # Fall back to publisher sites if Google Scholar fails
+                if not abstract:
+                    if self.use_google_scholar:
+                        logger.debug("🏢 Google Scholar failed, trying publisher sites...")
+                    else:
+                        logger.debug("🏢 Using publisher sites...")
+                    
+                    abstract = self.extract_abstract(paper.url)
+                
                 extraction_time = time.time() - start_time
                 
                 if abstract:
                     paper.abstract = abstract
                     successful_extractions += 1
-                    logger.info(f"✓ Abstract extracted successfully in {extraction_time:.2f}s (length: {len(abstract)} chars)")
+                    source = "Google Scholar" if self.use_google_scholar else "Publisher"
+                    logger.info(f"✓ Abstract extracted from {source} in {extraction_time:.2f}s (length: {len(abstract)} chars)")
                 else:
                     failed_extractions += 1
                     logger.warning(f"✗ Failed to extract abstract after {extraction_time:.2f}s")
@@ -1007,7 +1064,8 @@ class AbstractExtractor:
             logger.error(f"Unexpected error during batch extraction: {str(e)}", exc_info=True)
         finally:
             logger.info(f"Batch extraction completed: {successful_extractions} successful, {failed_extractions} failed, {len(updated_papers)} total processed")
-            self._teardown_driver()
+            if self.driver:
+                self._teardown_driver()
         
         return updated_papers
     
