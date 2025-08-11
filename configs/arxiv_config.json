@@ -1,0 +1,30 @@
+{
+  "name": "ArXiv Papers",
+  "description": "Configuration for ArXiv paper datasets",
+  "csv_columns": {
+    "title": "title",
+    "author": "authors", 
+    "summary": "abstract",
+    "keywords": "categories",
+    "key": "id",
+    "year": "year",
+    "doi": "doi",
+    "url": "url"
+  },
+  "tfidf_params": {
+    "max_features": 1500,
+    "stop_words": "english",
+    "ngram_range": [1, 2],
+    "min_df": 3,
+    "max_df": 0.7
+  },
+  "clustering_params": {
+    "max_k": 20,
+    "random_state": 42,
+    "n_init": 10
+  },
+  "pca_params": {
+    "n_components": 2,
+    "random_state": 42
+  }
+}

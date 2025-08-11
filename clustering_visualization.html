@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Academic Papers Clustering Visualization</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .control-group label {
+            font-weight: 600;
+            color: #555;
+            font-size: 0.9rem;
+        }
+
+        .control-group select,
+        .control-group input {
+            padding: 8px 12px;
+            border: 2px solid #e1e1e1;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+
+        .control-group select:focus,
+        .control-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .stats {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-left: auto;
+        }
+
+        .stat-item {
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #666;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 30px;
+            align-items: start;
+        }
+
+        .visualization-panel {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: #667eea;
+            color: white;
+            padding: 15px 20px;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .panel-content {
+            padding: 20px;
+        }
+
+        #scatter-plot {
+            width: 100%;
+            height: 500px;
+        }
+
+        #network-graph {
+            width: 100%;
+            height: 400px;
+            border: 1px solid #e1e1e1;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+
+        .cluster-summary {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            overflow: hidden;
+            max-height: 800px;
+            overflow-y: auto;
+        }
+
+        .cluster-item {
+            border-bottom: 1px solid #e1e1e1;
+            transition: all 0.3s;
+        }
+
+        .cluster-item:hover {
+            background: #f8f9fa;
+        }
+
+        .cluster-header {
+            padding: 15px 20px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f8f9fa;
+        }
+
+        .cluster-header:hover {
+            background: #e9ecef;
+        }
+
+        .cluster-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .cluster-count {
+            background: #667eea;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+        }
+
+        .cluster-content {
+            padding: 0 20px;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s, padding 0.3s;
+        }
+
+        .cluster-content.expanded {
+            max-height: 600px;
+            padding: 20px;
+        }
+
+        .keywords {
+            margin-bottom: 15px;
+        }
+
+        .keyword-tag {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 4px 8px;
+            margin: 2px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .paper-list {
+            margin-top: 15px;
+        }
+
+        .paper-item {
+            background: white;
+            border: 1px solid #e1e1e1;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .paper-item:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .paper-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 1rem;
+        }
+
+        .paper-authors {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 8px;
+        }
+
+        .paper-summary {
+            color: #777;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .paper-keywords {
+            margin-top: 10px;
+        }
+
+        .paper-keywords .keyword-tag {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fff5f5;
+            color: #c53030;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #c53030;
+            margin: 20px 0;
+        }
+
+        @media (max-width: 1024px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .stats {
+                margin-left: 0;
+                justify-content: center;
+            }
+        }
+
+        .cluster-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-right: 10px;
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 20px 0;
+            justify-content: center;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 10px;
+            background: white;
+            border-radius: 15px;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 id="page-title">Academic Papers Clustering Analysis</h1>
+            <p id="page-subtitle">Interactive visualization of research paper clusters based on titles, summaries, and keywords</p>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="dataset-upload">Upload Dataset:</label>
+                <input type="file" id="dataset-upload" accept=".json" onchange="handleFileUpload(event)">
+            </div>
+
+            <div class="control-group">
+                <label for="cluster-filter">Filter by Cluster:</label>
+                <select id="cluster-filter">
+                    <option value="all">All Clusters</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="search-input">Search Papers:</label>
+                <input type="text" id="search-input" placeholder="Search titles, authors, or keywords...">
+            </div>
+
+            <div class="control-group">
+                <label for="view-mode">View Mode:</label>
+                <select id="view-mode">
+                    <option value="scatter">Scatter Plot</option>
+                    <option value="network">Network Graph</option>
+                </select>
+            </div>
+
+            <div class="stats">
+                <div class="stat-item">
+                    <div class="stat-number" id="total-papers">0</div>
+                    <div class="stat-label">Total Papers</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="total-clusters">0</div>
+                    <div class="stat-label">Clusters</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="filtered-papers">0</div>
+                    <div class="stat-label">Filtered</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="dataset-name">-</div>
+                    <div class="stat-label">Dataset</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="visualization-panel">
+                <div class="panel-header">
+                    <span id="viz-title">Cluster Visualization</span>
+                </div>
+                <div class="panel-content">
+                    <div class="loading" id="loading">
+                        <div class="spinner"></div>
+                        <p>Loading clustering data...</p>
+                    </div>
+                    <div id="scatter-plot" style="display: none;"></div>
+                    <div id="network-graph" style="display: none;"></div>
+                    <div class="legend" id="legend"></div>
+                </div>
+            </div>
+
+            <div class="cluster-summary">
+                <div class="panel-header">Cluster Details</div>
+                <div id="cluster-list" class="panel-content">
+                    <!-- Cluster items will be populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let clusteringData = null;
+        let filteredData = null;
+        let currentView = 'scatter';
+        let currentDatasetName = 'Default Dataset';
+        
+        // Color palette for clusters
+        const clusterColors = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+            '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5'
+        ];
+
+        // Handle file upload
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (validateDataFormat(data)) {
+                        clusteringData = data;
+                        filteredData = clusteringData.papers;
+                        currentDatasetName = data.metadata?.source_file || file.name;
+                        initializeInterface();
+                    } else {
+                        showError('Invalid data format. Please upload a valid clustering JSON file.');
+                    }
+                } catch (error) {
+                    showError('Error parsing JSON file: ' + error.message);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // Validate data format
+        function validateDataFormat(data) {
+            return data && 
+                   data.papers && 
+                   Array.isArray(data.papers) && 
+                   data.cluster_info && 
+                   data.papers.length > 0 &&
+                   data.papers[0].hasOwnProperty('cluster_id');
+        }
+
+        // Load default clustering data
+        async function loadDefaultData() {
+            try {
+                const response = await fetch('clustering_data.json');
+                if (!response.ok) {
+                    throw new Error('No default dataset found. Please upload a clustering JSON file.');
+                }
+                clusteringData = await response.json();
+                filteredData = clusteringData.papers;
+                currentDatasetName = clusteringData.metadata?.source_file || 'Default Dataset';
+                initializeInterface();
+            } catch (error) {
+                showUploadPrompt();
+            }
+        }
+
+        function showUploadPrompt() {
+            const loading = document.getElementById('loading');
+            loading.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <h3>Welcome to Academic Papers Clustering Visualization</h3>
+                    <p>Please upload a clustering JSON file to get started, or use the clustering script to generate one from your CSV data.</p>
+                    <div style="margin: 20px 0;">
+                        <input type="file" id="upload-prompt" accept=".json" onchange="handleFileUpload(event)" style="margin: 10px;">
+                    </div>
+                    <div style="font-size: 0.9em; color: #666; max-width: 500px; margin: 0 auto;">
+                        <strong>Expected JSON format:</strong><br>
+                        • papers: Array of paper objects with cluster_id, Title, Author, summary, keywords<br>
+                        • cluster_info: Object with cluster statistics and keywords<br>
+                        • metadata: Optional information about the dataset
+                    </div>
+                </div>
+            `;
+        }
+
+        function showError(message) {
+            const loading = document.getElementById('loading');
+            loading.innerHTML = `<div class="error">${message}</div>`;
+        }
+
+        function initializeInterface() {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('scatter-plot').style.display = 'block';
+            
+            // Update statistics
+            updateStats();
+            
+            // Populate cluster filter
+            populateClusterFilter();
+            
+            // Create initial visualization
+            createVisualization();
+            
+            // Populate cluster summary
+            populateClusterSummary();
+            
+            // Setup event listeners
+            setupEventListeners();
+            
+            // Create legend
+            createLegend();
+        }
+
+        function updateStats() {
+            document.getElementById('total-papers').textContent = clusteringData.papers.length;
+            document.getElementById('total-clusters').textContent = Object.keys(clusteringData.cluster_info).length;
+            document.getElementById('filtered-papers').textContent = filteredData.length;
+            document.getElementById('dataset-name').textContent = currentDatasetName.replace(/\.(csv|json)$/i, '');
+            
+            // Update page title and subtitle based on dataset
+            if (clusteringData.metadata) {
+                if (clusteringData.metadata.source_file) {
+                    document.getElementById('page-title').textContent = 
+                        `${clusteringData.metadata.source_file.replace(/\.(csv|json)$/i, '')} - Clustering Analysis`;
+                }
+                if (clusteringData.metadata.clustering_method) {
+                    document.getElementById('page-subtitle').textContent = 
+                        `Interactive visualization using ${clusteringData.metadata.clustering_method} clustering and ${clusteringData.metadata.feature_extraction || 'TF-IDF'} features`;
+                }
+            }
+        }
+
+        function populateClusterFilter() {
+            const select = document.getElementById('cluster-filter');
+            Object.keys(clusteringData.cluster_info).forEach(clusterId => {
+                const option = document.createElement('option');
+                option.value = clusterId;
+                option.textContent = `Cluster ${clusterId} (${clusteringData.cluster_info[clusterId].size} papers)`;
+                select.appendChild(option);
+            });
+        }
+
+        function createVisualization() {
+            if (currentView === 'scatter') {
+                createScatterPlot();
+            } else {
+                createNetworkGraph();
+            }
+        }
+
+        function createScatterPlot() {
+            const traces = {};
+            
+            // Group papers by cluster
+            filteredData.forEach(paper => {
+                const clusterId = paper.cluster_id;
+                if (!traces[clusterId]) {
+                    traces[clusterId] = {
+                        x: [],
+                        y: [],
+                        text: [],
+                        mode: 'markers',
+                        type: 'scatter',
+                        name: `Cluster ${clusterId}`,
+                        marker: {
+                            color: clusterColors[clusterId % clusterColors.length],
+                            size: 8,
+                            opacity: 0.7
+                        }
+                    };
+                }
+                
+                traces[clusterId].x.push(paper.pca_x || Math.random());
+                traces[clusterId].y.push(paper.pca_y || Math.random());
+                traces[clusterId].text.push(`<b>${paper.Title}</b><br>${paper.Author}<br>Cluster: ${clusterId}`);
+            });
+
+            const data = Object.values(traces);
+            
+            const layout = {
+                title: 'Papers Clustered by Content Similarity',
+                xaxis: { title: 'PCA Component 1' },
+                yaxis: { title: 'PCA Component 2' },
+                hovermode: 'closest',
+                showlegend: true,
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                paper_bgcolor: 'rgba(0,0,0,0)'
+            };
+
+            Plotly.newPlot('scatter-plot', data, layout, {responsive: true});
+        }
+
+        function createNetworkGraph() {
+            const container = document.getElementById('network-graph');
+            const width = container.clientWidth;
+            const height = 400;
+
+            // Clear previous content
+            d3.select("#network-graph").html("");
+
+            const svg = d3.select("#network-graph").append("svg")
+                .attr("width", width)
+                .attr("height", height);
+
+            // Create nodes from filtered papers
+            const nodes = filteredData.map((paper, i) => ({
+                id: paper.Key,
+                title: paper.Title,
+                author: paper.Author,
+                cluster: paper.cluster_id,
+                x: width / 2 + (Math.random() - 0.5) * 100,
+                y: height / 2 + (Math.random() - 0.5) * 100
+            }));
+
+            // Create edges between papers in the same cluster
+            const links = [];
+            const clusterGroups = {};
+            
+            // Group papers by cluster
+            filteredData.forEach(paper => {
+                if (!clusterGroups[paper.cluster_id]) {
+                    clusterGroups[paper.cluster_id] = [];
+                }
+                clusterGroups[paper.cluster_id].push(paper);
+            });
+
+            // Create links within clusters (limited to avoid clutter)
+            Object.values(clusterGroups).forEach(clusterPapers => {
+                if (clusterPapers.length > 1) {
+                    // Connect each paper to 2-3 others in the same cluster
+                    clusterPapers.forEach((paper, i) => {
+                        const maxConnections = Math.min(3, clusterPapers.length - 1);
+                        for (let j = 1; j <= maxConnections && i + j < clusterPapers.length; j++) {
+                            links.push({
+                                source: paper.Key,
+                                target: clusterPapers[i + j].Key,
+                                cluster: paper.cluster_id
+                            });
+                        }
+                    });
+                }
+            });
+
+            // Create force simulation
+            const simulation = d3.forceSimulation(nodes)
+                .force("link", d3.forceLink(links).id(d => d.id).distance(50))
+                .force("charge", d3.forceManyBody().strength(-100))
+                .force("center", d3.forceCenter(width / 2, height / 2))
+                .force("collision", d3.forceCollide().radius(15));
+
+            // Add zoom behavior
+            const zoom = d3.zoom()
+                .scaleExtent([0.5, 3])
+                .on("zoom", (event) => {
+                    g.attr("transform", event.transform);
+                });
+
+            svg.call(zoom);
+
+            const g = svg.append("g");
+
+            // Add links
+            const link = g.append("g")
+                .selectAll("line")
+                .data(links)
+                .enter()
+                .append("line")
+                .style("stroke", d => clusterColors[d.cluster % clusterColors.length])
+                .style("stroke-opacity", 0.3)
+                .style("stroke-width", 1);
+
+            // Add nodes
+            const node = g.append("g")
+                .selectAll("circle")
+                .data(nodes)
+                .enter()
+                .append("circle")
+                .attr("r", 8)
+                .style("fill", d => clusterColors[d.cluster % clusterColors.length])
+                .style("stroke", "#fff")
+                .style("stroke-width", 2)
+                .style("cursor", "pointer")
+                .call(d3.drag()
+                    .on("start", dragStarted)
+                    .on("drag", dragged)
+                    .on("end", dragEnded))
+                .on("mouseover", function(event, d) {
+                    // Show tooltip
+                    const tooltip = d3.select("body").append("div")
+                        .attr("class", "tooltip")
+                        .style("position", "absolute")
+                        .style("background", "rgba(0,0,0,0.8)")
+                        .style("color", "white")
+                        .style("padding", "10px")
+                        .style("border-radius", "5px")
+                        .style("pointer-events", "none")
+                        .style("font-size", "12px")
+                        .style("max-width", "300px")
+                        .html(`<strong>${d.title}</strong><br>Author: ${d.author}<br>Cluster: ${d.cluster}`)
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 10) + "px");
+                    
+                    // Highlight connected nodes
+                    d3.selectAll("circle").style("opacity", 0.3);
+                    d3.selectAll("line").style("opacity", 0.1);
+                    
+                    d3.select(this).style("opacity", 1);
+                    link.filter(l => l.source.id === d.id || l.target.id === d.id)
+                        .style("opacity", 0.8);
+                    node.filter(n => links.some(l => 
+                        (l.source.id === d.id && l.target.id === n.id) ||
+                        (l.target.id === d.id && l.source.id === n.id)
+                    )).style("opacity", 1);
+                })
+                .on("mouseout", function() {
+                    d3.selectAll(".tooltip").remove();
+                    d3.selectAll("circle").style("opacity", 1);
+                    d3.selectAll("line").style("opacity", 0.3);
+                })
+                .on("click", function(event, d) {
+                    showPaperDetails(d.id);
+                });
+
+            // Update positions on simulation tick
+            simulation.on("tick", () => {
+                link
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+
+                node
+                    .attr("cx", d => d.x)
+                    .attr("cy", d => d.y);
+            });
+
+            // Drag functions
+            function dragStarted(event, d) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+
+            function dragged(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            }
+
+            function dragEnded(event, d) {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }
+
+            // Add legend for network view
+            const legend = svg.append("g")
+                .attr("class", "network-legend")
+                .attr("transform", `translate(10, ${height - 100})`);
+
+            legend.append("text")
+                .text("Network View:")
+                .style("font-weight", "bold")
+                .style("font-size", "12px");
+
+            legend.append("text")
+                .attr("y", 15)
+                .text("• Nodes = Papers")
+                .style("font-size", "11px");
+
+            legend.append("text")
+                .attr("y", 30)
+                .text("• Links = Same Cluster")
+                .style("font-size", "11px");
+
+            legend.append("text")
+                .attr("y", 45)
+                .text("• Drag to move nodes")
+                .style("font-size", "11px");
+        }
+
+        function populateClusterSummary() {
+            const clusterList = document.getElementById('cluster-list');
+            clusterList.innerHTML = '';
+
+            Object.entries(clusteringData.cluster_info).forEach(([clusterId, info]) => {
+                const clusterPapers = filteredData.filter(paper => paper.cluster_id == clusterId);
+                
+                const clusterItem = document.createElement('div');
+                clusterItem.className = 'cluster-item';
+                clusterItem.innerHTML = `
+                    <div class="cluster-header" onclick="toggleCluster(${clusterId})">
+                        <div style="display: flex; align-items: center;">
+                            <div class="cluster-color" style="background-color: ${clusterColors[clusterId % clusterColors.length]}"></div>
+                            <span class="cluster-title">Cluster ${clusterId}</span>
+                        </div>
+                        <span class="cluster-count">${clusterPapers.length} papers</span>
+                    </div>
+                    <div class="cluster-content" id="cluster-${clusterId}">
+                        <div class="keywords">
+                            <strong>Top Keywords:</strong><br>
+                            ${info.top_keywords.slice(0, 5).map(([keyword, score]) => 
+                                `<span class="keyword-tag">${keyword}</span>`
+                            ).join('')}
+                        </div>
+                        <div class="paper-list">
+                            ${clusterPapers.map(paper => `
+                                <div class="paper-item" onclick="showPaperDetails('${paper.Key}')">
+                                    <div class="paper-title">${paper.Title}</div>
+                                    <div class="paper-authors">${paper.Author || 'Unknown authors'}</div>
+                                    <div class="paper-summary">${paper.summary || 'No summary available'}</div>
+                                    <div class="paper-keywords">
+                                        ${(paper.keywords || '').split(',').slice(0, 3).map(keyword => 
+                                            keyword.trim() ? `<span class="keyword-tag">${keyword.trim()}</span>` : ''
+                                        ).join('')}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+                clusterList.appendChild(clusterItem);
+            });
+        }
+
+        function toggleCluster(clusterId) {
+            const content = document.getElementById(`cluster-${clusterId}`);
+            content.classList.toggle('expanded');
+        }
+
+        function showPaperDetails(paperKey) {
+            const paper = clusteringData.papers.find(p => p.Key === paperKey);
+            if (paper) {
+                alert(`Paper: ${paper.Title}\n\nAuthors: ${paper.Author}\n\nSummary: ${paper.summary}`);
+                // In a real implementation, you would show a modal or detailed view
+            }
+        }
+
+        function setupEventListeners() {
+            // Cluster filter
+            document.getElementById('cluster-filter').addEventListener('change', function() {
+                const selectedCluster = this.value;
+                if (selectedCluster === 'all') {
+                    filteredData = clusteringData.papers;
+                } else {
+                    filteredData = clusteringData.papers.filter(paper => paper.cluster_id == selectedCluster);
+                }
+                updateStats();
+                createVisualization();
+                populateClusterSummary();
+            });
+
+            // Search input
+            document.getElementById('search-input').addEventListener('input', function() {
+                const searchTerm = this.value.toLowerCase();
+                if (searchTerm === '') {
+                    filteredData = clusteringData.papers;
+                } else {
+                    filteredData = clusteringData.papers.filter(paper => 
+                        paper.Title.toLowerCase().includes(searchTerm) ||
+                        (paper.Author || '').toLowerCase().includes(searchTerm) ||
+                        (paper.keywords || '').toLowerCase().includes(searchTerm) ||
+                        (paper.summary || '').toLowerCase().includes(searchTerm)
+                    );
+                }
+                updateStats();
+                createVisualization();
+                populateClusterSummary();
+            });
+
+            // View mode
+            document.getElementById('view-mode').addEventListener('change', function() {
+                currentView = this.value;
+                if (currentView === 'scatter') {
+                    document.getElementById('scatter-plot').style.display = 'block';
+                    document.getElementById('network-graph').style.display = 'none';
+                    document.getElementById('viz-title').textContent = 'Cluster Scatter Plot';
+                } else {
+                    document.getElementById('scatter-plot').style.display = 'none';
+                    document.getElementById('network-graph').style.display = 'block';
+                    document.getElementById('viz-title').textContent = 'Network Graph';
+                }
+                createVisualization();
+            });
+        }
+
+        function createLegend() {
+            const legend = document.getElementById('legend');
+            Object.entries(clusteringData.cluster_info).forEach(([clusterId, info]) => {
+                const legendItem = document.createElement('div');
+                legendItem.className = 'legend-item';
+                legendItem.innerHTML = `
+                    <div class="cluster-color" style="background-color: ${clusterColors[clusterId % clusterColors.length]}"></div>
+                    <span>Cluster ${clusterId} (${info.size})</span>
+                `;
+                legend.appendChild(legendItem);
+            });
+        }
+
+        // Initialize the application
+        window.addEventListener('load', loadDefaultData);
+    </script>
+</body>
+</html>

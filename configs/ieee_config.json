@@ -1,0 +1,30 @@
+{
+  "name": "IEEE Papers",
+  "description": "Configuration for IEEE paper datasets",
+  "csv_columns": {
+    "title": "Document Title",
+    "author": "Authors", 
+    "summary": "Abstract",
+    "keywords": "Author Keywords",
+    "key": "DOI",
+    "year": "Publication Year",
+    "doi": "DOI",
+    "url": "PDF Link"
+  },
+  "tfidf_params": {
+    "max_features": 1200,
+    "stop_words": "english",
+    "ngram_range": [1, 2],
+    "min_df": 2,
+    "max_df": 0.8
+  },
+  "clustering_params": {
+    "max_k": 18,
+    "random_state": 42,
+    "n_init": 10
+  },
+  "pca_params": {
+    "n_components": 2,
+    "random_state": 42
+  }
+}

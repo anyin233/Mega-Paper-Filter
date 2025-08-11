@@ -1,0 +1,30 @@
+{
+  "name": "ASPLOS Conference Papers",
+  "description": "Configuration for ASPLOS conference paper datasets",
+  "csv_columns": {
+    "title": "Title",
+    "author": "Author", 
+    "summary": "summary",
+    "keywords": "keywords",
+    "key": "Key",
+    "year": "Publication Year",
+    "doi": "DOI",
+    "url": "Url"
+  },
+  "tfidf_params": {
+    "max_features": 1000,
+    "stop_words": "english",
+    "ngram_range": [1, 2],
+    "min_df": 2,
+    "max_df": 0.8
+  },
+  "clustering_params": {
+    "max_k": 15,
+    "random_state": 42,
+    "n_init": 10
+  },
+  "pca_params": {
+    "n_components": 2,
+    "random_state": 42
+  }
+}
