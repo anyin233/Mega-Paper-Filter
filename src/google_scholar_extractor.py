@@ -29,7 +29,8 @@ class GoogleScholarExtractor:
         'mirror3': 'https://scholar.google.com.au',
         'mirror4': 'https://scholar.google.de',
         'scihub': 'https://sci-hub.se',  # Alternative source
-        'semantic': 'https://www.semanticscholar.org'  # Semantic Scholar as backup
+        'semantic': 'https://www.semanticscholar.org',  # Semantic Scholar as backup
+        'ChinaMirror': 'https://sci-hub.org.cn/'
     }
     
     def __init__(self, headless: bool = False, timeout: int = 15, preferred_mirror: str = 'default'):
