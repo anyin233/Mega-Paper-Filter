@@ -6,6 +6,7 @@
 import json
 import pandas as pd
 from rich.console import Console
+from rich.progress import track
 from src.openai_api import get_openai_client, get_openai_response
 import os
 
@@ -74,20 +75,38 @@ if api_key or base_url:
 openai_client = get_openai_client(api_key, base_url)
 console.print("🔍 Starting analysis of paper abstracts...")
 
-# Currently, we only test first paper and print its result
-paper = paper_df.iloc[0]
-abstract = paper.get('Abstract Note', '')
-if not abstract:
-    console.print("❌ No abstract found for the first paper. Please ensure the CSV file contains an 'Abstract Note' column.")
-    exit()
+# Add a list to store results
+results = []
 
-analyze_result = get_openai_response(openai_client, abstract)
-if not analyze_result:
-    console.print("❌ Failed to get a response from OpenAI API. Please check your API key and network connection.")
-    exit()
+for i, paper in enumerate(track(paper_df.to_dict(orient='records'), description="Analyzing abstracts")):
+    abstract = paper.get('Abstract Note', '')
+    if not abstract:
+        console.print(f"⚠️ No abstract found for paper at row {i+1}. Skipping...")
+        results.append(None)
+        continue
 
-console.print("✅ Analysis completed successfully!")
-
-console.print("📊 Analysis Result:")
-console.print(analyze_result)
+    analyze_result = get_openai_response(openai_client, abstract, model="gpt-4.1")
+    if not analyze_result:
+        console.print(f"⚠️ Failed to get response for paper at row {i+1}. Skipping...")
+        results.append(None)
+        continue
+      
+    try:
+        analyze_result = json.loads(analyze_result)
+    except json.JSONDecodeError:
+        console.print(f"❌ Invalid JSON response for paper at row {i+1}. Skipping...")
+        results.append(None)
+        continue
     
+    results.append(analyze_result)
+
+summary = [result['summary'] if result else None for result in results]
+keywords = [", ".join(result['keywords']) if result else None for result in results]
+# Add results to dataframe and save
+paper_df['summary'] = summary
+paper_df['keywords'] = keywords
+output_file = file_path.replace('.csv', '_labeled.csv')
+paper_df.to_csv(output_file, index=False)
+console.print(f"✅ Analysis complete. Results saved to {output_file}")
+
+      
