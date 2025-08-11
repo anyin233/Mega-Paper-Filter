@@ -6,7 +6,6 @@ import seaborn as sns
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 import json
 import argparse

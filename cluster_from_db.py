@@ -1,0 +1,519 @@
+#!/usr/bin/env python3
+"""
+Database-driven clustering script for academic papers.
+Reads papers from SQLite database, performs clustering, and generates visualization data.
+"""
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
+import json
+import argparse
+import os
+from pathlib import Path
+import warnings
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+
+from database import PaperDatabase
+
+warnings.filterwarnings('ignore')
+console = Console()
+
+class DatabaseClusteringAnalyzer:
+    """Clustering analyzer that works with database-stored papers."""
+    
+    def __init__(self, db_path: str, config: dict = None):
+        """Initialize with database connection and configuration."""
+        self.db = PaperDatabase(db_path)
+        self.config = config or self.get_default_config()
+        
+        # Analysis results
+        self.df = None
+        self.features = None
+        self.vectorizer = None
+        self.cluster_labels = None
+        self.cluster_analysis = None
+        self.pca = None
+        self.features_2d = None
+        
+    def get_default_config(self) -> dict:
+        """Get default clustering configuration."""
+        return {
+            'tfidf_params': {
+                'max_features': 1000,
+                'stop_words': 'english',
+                'ngram_range': (1, 2),
+                'min_df': 2,
+                'max_df': 0.8
+            },
+            'clustering_params': {
+                'max_k': 15,
+                'random_state': 42,
+                'n_init': 10
+            },
+            'pca_params': {
+                'n_components': 2,
+                'random_state': 42
+            }
+        }
+    
+    def load_papers_from_db(self, dataset_name: str = None, min_papers: int = 10) -> pd.DataFrame:
+        """Load papers from database for analysis."""
+        console.print(f"📚 Loading papers from database...")
+        
+        if dataset_name:
+            papers = self.db.get_papers_by_dataset(dataset_name)
+            console.print(f"📊 Dataset filter: {dataset_name}")
+        else:
+            papers = self.db.get_all_papers()
+            console.print("📊 Using all papers in database")
+        
+        if not papers:
+            raise ValueError(f"No papers found in database" + 
+                           (f" for dataset '{dataset_name}'" if dataset_name else ""))
+        
+        # Convert to DataFrame
+        self.df = pd.DataFrame(papers)
+        
+        # Parse JSON fields
+        self.df['authors_parsed'] = self.df['authors'].apply(
+            lambda x: json.loads(x) if x else []
+        )
+        self.df['keywords_parsed'] = self.df['keywords'].apply(
+            lambda x: json.loads(x) if x else []
+        )
+        
+        # Create text fields for analysis
+        self.df['authors_str'] = self.df['authors_parsed'].apply(
+            lambda x: '; '.join(x) if x else ''
+        )
+        self.df['keywords_str'] = self.df['keywords_parsed'].apply(
+            lambda x: ', '.join(x) if x else ''
+        )
+        
+        # Create combined text for clustering
+        self.df['combined_text'] = (
+            self.df['title'].fillna('') + ' ' +
+            self.df['abstract'].fillna('') + ' ' +
+            self.df['summary'].fillna('') + ' ' +
+            self.df['keywords_str'].fillna('')
+        ).str.strip()
+        
+        # Filter out papers with insufficient text
+        initial_count = len(self.df)
+        self.df = self.df[self.df['combined_text'].str.len() > 20]  # Minimum 20 characters
+        filtered_count = len(self.df)
+        
+        if filtered_count < min_papers:
+            raise ValueError(f"Insufficient papers for clustering: {filtered_count} (minimum: {min_papers})")
+        
+        if filtered_count < initial_count:
+            console.print(f"⚠️  Filtered out {initial_count - filtered_count} papers with insufficient text")
+        
+        console.print(f"✅ Loaded {len(self.df)} papers for analysis")
+        
+        # Display dataset information
+        datasets = self.df['source_dataset'].value_counts()
+        if len(datasets) > 1:
+            console.print(f"📊 Papers by dataset:")
+            for dataset, count in datasets.items():
+                console.print(f"   • {dataset}: {count} papers")
+        
+        return self.df
+    
+    def create_features(self):
+        """Create TF-IDF features from combined text."""
+        console.print("🔧 Creating TF-IDF features...")
+        
+        self.vectorizer = TfidfVectorizer(**self.config['tfidf_params'])
+        self.features = self.vectorizer.fit_transform(self.df['combined_text'])
+        
+        console.print(f"✅ Created {self.features.shape[1]} features from {len(self.df)} papers")
+        return self.features
+    
+    def find_optimal_clusters(self) -> tuple:
+        """Find optimal number of clusters using silhouette analysis."""
+        console.print("🎯 Finding optimal number of clusters...")
+        
+        max_k = min(self.config['clustering_params']['max_k'], len(self.df) - 1, 20)
+        if max_k < 2:
+            raise ValueError("Need at least 2 papers for clustering")
+        
+        inertias = []
+        silhouette_scores = []
+        k_range = range(2, max_k + 1)
+        
+        for k in k_range:
+            kmeans = KMeans(
+                n_clusters=k,
+                random_state=self.config['clustering_params']['random_state'],
+                n_init=self.config['clustering_params']['n_init']
+            )
+            cluster_labels = kmeans.fit_predict(self.features)
+            
+            inertias.append(kmeans.inertia_)
+            silhouette_scores.append(silhouette_score(self.features, cluster_labels))
+        
+        # Find optimal k
+        optimal_k = k_range[np.argmax(silhouette_scores)]
+        max_silhouette = max(silhouette_scores)
+        
+        console.print(f"✅ Optimal clusters: {optimal_k} (silhouette score: {max_silhouette:.3f})")
+        
+        return optimal_k, inertias, silhouette_scores, k_range
+    
+    def perform_clustering(self, n_clusters: int):
+        """Perform K-means clustering."""
+        console.print(f"🤖 Performing K-means clustering with {n_clusters} clusters...")
+        
+        kmeans = KMeans(
+            n_clusters=n_clusters,
+            random_state=self.config['clustering_params']['random_state'],
+            n_init=self.config['clustering_params']['n_init']
+        )
+        self.cluster_labels = kmeans.fit_predict(self.features)
+        
+        # Add cluster labels to dataframe
+        self.df['cluster_id'] = self.cluster_labels
+        
+        console.print("✅ Clustering complete")
+        return kmeans, self.cluster_labels
+    
+    def create_pca_projection(self):
+        """Create PCA projection for visualization."""
+        console.print("📊 Creating PCA projection for visualization...")
+        
+        self.pca = PCA(**self.config['pca_params'])
+        self.features_2d = self.pca.fit_transform(self.features.toarray())
+        
+        # Add PCA coordinates to dataframe
+        self.df['pca_x'] = self.features_2d[:, 0]
+        self.df['pca_y'] = self.features_2d[:, 1]
+        
+        explained_var = self.pca.explained_variance_ratio_
+        console.print(f"✅ PCA complete (explained variance: {explained_var[0]:.1%} + {explained_var[1]:.1%} = {sum(explained_var):.1%})")
+        
+        return self.pca, self.features_2d
+    
+    def analyze_clusters(self):
+        """Analyze cluster characteristics."""
+        console.print("🔍 Analyzing cluster characteristics...")
+        
+        self.cluster_analysis = {}
+        feature_names = self.vectorizer.get_feature_names_out()
+        
+        for cluster_id in np.unique(self.cluster_labels):
+            cluster_mask = self.cluster_labels == cluster_id
+            cluster_papers = self.df[cluster_mask]
+            
+            # Get cluster center in feature space
+            cluster_features = self.features[cluster_mask]
+            cluster_center = cluster_features.mean(axis=0).A1
+            
+            # Get top features (keywords) for this cluster
+            top_features_idx = cluster_center.argsort()[-15:][::-1]
+            top_features = [feature_names[i] for i in top_features_idx]
+            top_scores = cluster_center[top_features_idx]
+            
+            # Get sample paper titles
+            sample_titles = cluster_papers['title'].head(5).tolist()
+            
+            # Get most common keywords from papers in cluster
+            all_keywords = []
+            for keywords_list in cluster_papers['keywords_parsed']:
+                all_keywords.extend(keywords_list)
+            
+            keyword_freq = pd.Series(all_keywords).value_counts()
+            common_keywords = keyword_freq.head(10).to_dict()
+            
+            self.cluster_analysis[cluster_id] = {
+                'size': len(cluster_papers),
+                'top_tfidf_features': list(zip(top_features, top_scores)),
+                'sample_titles': sample_titles,
+                'common_keywords': common_keywords,
+                'avg_year': cluster_papers['publication_year'].mean() if 'publication_year' in cluster_papers.columns else None
+            }
+        
+        console.print(f"✅ Analyzed {len(self.cluster_analysis)} clusters")
+        return self.cluster_analysis
+    
+    def generate_visualization_data(self, output_path: str, dataset_name: str = None):
+        """Generate JSON data for web visualization."""
+        console.print("📄 Generating visualization data...")
+        
+        # Prepare papers data for web interface
+        papers_data = []
+        for _, paper in self.df.iterrows():
+            paper_dict = {
+                'Key': str(paper.get('paper_id', paper.get('id', ''))),
+                'Title': paper.get('title', ''),
+                'Author': paper.get('authors_str', ''),
+                'summary': paper.get('summary', ''),
+                'keywords': paper.get('keywords_str', ''),
+                'cluster_id': int(paper['cluster_id']),
+                'pca_x': float(paper['pca_x']),
+                'pca_y': float(paper['pca_y']),
+                'Publication Year': paper.get('publication_year', ''),
+                'DOI': paper.get('doi', ''),
+                'Url': paper.get('url', ''),
+                'Venue': paper.get('venue', ''),
+                'Abstract': paper.get('abstract', '')
+            }
+            papers_data.append(paper_dict)
+        
+        # Prepare cluster info using TF-IDF features (more relevant for clustering)
+        cluster_info = {}
+        for cluster_id, analysis in self.cluster_analysis.items():
+            # Use TF-IDF features as main keywords for consistency
+            top_keywords = [(kw, float(score)) for kw, score in analysis['top_tfidf_features'][:10]]
+            
+            cluster_info[str(cluster_id)] = {
+                'size': analysis['size'],
+                'top_keywords': top_keywords,
+                'sample_titles': analysis['sample_titles'],
+                'common_paper_keywords': analysis['common_keywords']
+            }
+        
+        # Create metadata
+        db_stats = self.db.get_statistics()
+        metadata = {
+            'generated_at': pd.Timestamp.now().isoformat(),
+            'source_database': str(self.db.db_path),
+            'dataset_filter': dataset_name,
+            'clustering_method': 'K-means',
+            'feature_extraction': 'TF-IDF',
+            'total_papers_in_db': db_stats['total_papers'],
+            'papers_used_for_clustering': len(papers_data),
+            'pca_explained_variance': [float(x) for x in self.pca.explained_variance_ratio_],
+            'clustering_config': self.config
+        }
+        
+        # Create complete JSON structure
+        json_data = {
+            'papers': papers_data,
+            'cluster_info': cluster_info,
+            'total_papers': len(papers_data),
+            'total_clusters': len(cluster_info),
+            'metadata': metadata
+        }
+        
+        # Save to file
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, indent=2, ensure_ascii=False)
+        
+        console.print(f"✅ Visualization data saved to {output_path}")
+        return json_data
+    
+    def print_cluster_summary(self):
+        """Print detailed cluster analysis summary."""
+        console.print(Panel.fit(
+            "[bold blue]CLUSTER ANALYSIS SUMMARY[/bold blue]",
+            border_style="blue"
+        ))
+        
+        for cluster_id, analysis in self.cluster_analysis.items():
+            console.print(f"\n[bold cyan]Cluster {cluster_id}[/bold cyan] ({analysis['size']} papers)")
+            console.print("─" * 50)
+            
+            # Top TF-IDF features
+            console.print("[yellow]Top TF-IDF Features:[/yellow]")
+            for feature, score in analysis['top_tfidf_features'][:8]:
+                console.print(f"  • {feature}: {score:.3f}")
+            
+            # Common paper keywords (if available)
+            if analysis['common_keywords']:
+                console.print("\n[yellow]Common Paper Keywords:[/yellow]")
+                for keyword, count in list(analysis['common_keywords'].items())[:5]:
+                    console.print(f"  • {keyword}: {count} papers")
+            
+            # Sample titles
+            console.print("\n[yellow]Sample Paper Titles:[/yellow]")
+            for i, title in enumerate(analysis['sample_titles'][:3], 1):
+                console.print(f"  {i}. {title}")
+            
+            # Average year if available
+            if analysis['avg_year'] and not pd.isna(analysis['avg_year']):
+                console.print(f"\n[yellow]Average Publication Year:[/yellow] {analysis['avg_year']:.1f}")
+    
+    def create_visualizations(self, output_path: str, dataset_name: str = None):
+        """Create matplotlib visualizations."""
+        console.print("📊 Creating visualization plots...")
+        
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Main title
+        title = f"Academic Papers Clustering Analysis"
+        if dataset_name:
+            title += f" - {dataset_name}"
+        title += f" ({len(self.df)} papers, {len(np.unique(self.cluster_labels))} clusters)"
+        fig.suptitle(title, fontsize=16, fontweight='bold')
+        
+        # 1. Cluster scatter plot
+        n_clusters = len(np.unique(self.cluster_labels))
+        scatter = axes[0, 0].scatter(
+            self.features_2d[:, 0], self.features_2d[:, 1],
+            c=self.cluster_labels, cmap='tab10', alpha=0.7, s=50
+        )
+        axes[0, 0].set_title(f'Paper Clusters (K={n_clusters})')
+        axes[0, 0].set_xlabel(f'PCA Component 1 ({self.pca.explained_variance_ratio_[0]:.1%} variance)')
+        axes[0, 0].set_ylabel(f'PCA Component 2 ({self.pca.explained_variance_ratio_[1]:.1%} variance)')
+        plt.colorbar(scatter, ax=axes[0, 0])
+        
+        # 2. Cluster size distribution
+        cluster_counts = pd.Series(self.cluster_labels).value_counts().sort_index()
+        axes[0, 1].bar(cluster_counts.index, cluster_counts.values, 
+                      color=plt.cm.tab10(np.linspace(0, 1, len(cluster_counts))))
+        axes[0, 1].set_title('Cluster Size Distribution')
+        axes[0, 1].set_xlabel('Cluster ID')
+        axes[0, 1].set_ylabel('Number of Papers')
+        
+        # 3. Publication year distribution (if available)
+        if 'publication_year' in self.df.columns and self.df['publication_year'].notna().sum() > 0:
+            year_data = self.df['publication_year'].dropna()
+            axes[1, 0].hist(year_data, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+            axes[1, 0].set_title('Publication Year Distribution')
+            axes[1, 0].set_xlabel('Publication Year')
+            axes[1, 0].set_ylabel('Number of Papers')
+        else:
+            axes[1, 0].text(0.5, 0.5, 'Publication year\ndata not available', 
+                           ha='center', va='center', transform=axes[1, 0].transAxes)
+            axes[1, 0].set_title('Publication Year Distribution')
+        
+        # 4. Dataset distribution (if multiple datasets)
+        dataset_counts = self.df['source_dataset'].value_counts()
+        if len(dataset_counts) > 1:
+            axes[1, 1].pie(dataset_counts.values, labels=dataset_counts.index, autopct='%1.1f%%')
+            axes[1, 1].set_title('Papers by Dataset')
+        else:
+            axes[1, 1].text(0.5, 0.5, f'Single dataset:\n{dataset_counts.index[0]}', 
+                           ha='center', va='center', transform=axes[1, 1].transAxes)
+            axes[1, 1].set_title('Dataset Distribution')
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        console.print(f"✅ Plots saved to {output_path}")
+        
+        return fig
+    
+    def close(self):
+        """Close database connection."""
+        if self.db:
+            self.db.close()
+
+def main():
+    parser = argparse.ArgumentParser(description="Cluster papers from database")
+    parser.add_argument('--database', default='papers.db', help='Database file path')
+    parser.add_argument('--dataset', help='Dataset name to filter (optional)')
+    parser.add_argument('--output-dir', default='.', help='Output directory')
+    parser.add_argument('--output-prefix', default='clustering', help='Output file prefix')
+    parser.add_argument('--config', help='JSON configuration file')
+    parser.add_argument('--show-plots', action='store_true', help='Display plots instead of saving')
+    parser.add_argument('--min-papers', type=int, default=5, help='Minimum papers required')
+    parser.add_argument('--list-datasets', action='store_true', help='List available datasets and exit')
+    
+    args = parser.parse_args()
+    
+    # Check if database exists
+    if not os.path.exists(args.database):
+        console.print(f"❌ Database not found: {args.database}")
+        console.print("💡 Run parse_paper_db.py first to populate the database")
+        return
+    
+    # Initialize analyzer
+    config = None
+    if args.config and os.path.exists(args.config):
+        with open(args.config, 'r') as f:
+            config = json.load(f)
+    
+    analyzer = DatabaseClusteringAnalyzer(args.database, config)
+    
+    try:
+        # List datasets if requested
+        if args.list_datasets:
+            datasets = analyzer.db.get_datasets()
+            if not datasets:
+                console.print("No datasets found in database")
+                return
+            
+            console.print("[bold blue]Available Datasets:[/bold blue]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Dataset", style="cyan")
+            table.add_column("Papers", style="yellow")
+            table.add_column("Description", style="green")
+            table.add_column("Created", style="blue")
+            
+            for dataset in datasets:
+                created = dataset['created_at'].split('T')[0] if dataset['created_at'] else 'Unknown'
+                table.add_row(
+                    dataset['name'],
+                    str(dataset['actual_papers']),
+                    dataset['description'] or 'No description',
+                    created
+                )
+            
+            console.print(table)
+            return
+        
+        # Display banner
+        console.print(Panel.fit(
+            f"[bold blue]Database Clustering Analysis[/bold blue]\n"
+            f"🗃️  Database: {args.database}\n" +
+            (f"📊 Dataset filter: {args.dataset}\n" if args.dataset else "") +
+            f"📁 Output directory: {args.output_dir}",
+            border_style="blue"
+        ))
+        
+        # Load papers
+        df = analyzer.load_papers_from_db(args.dataset, args.min_papers)
+        
+        # Perform analysis
+        analyzer.create_features()
+        optimal_k, inertias, silhouette_scores, k_range = analyzer.find_optimal_clusters()
+        analyzer.perform_clustering(optimal_k)
+        analyzer.create_pca_projection()
+        analyzer.analyze_clusters()
+        
+        # Generate outputs
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(exist_ok=True)
+        
+        output_prefix = output_dir / args.output_prefix
+        
+        # Generate visualization data for web
+        json_output = f"{output_prefix}_data.json"
+        analyzer.generate_visualization_data(json_output, args.dataset)
+        
+        # Create plots
+        plot_output = f"{output_prefix}_plots.png"
+        fig = analyzer.create_visualizations(plot_output, args.dataset)
+        
+        if args.show_plots:
+            plt.show()
+        else:
+            plt.close(fig)
+        
+        # Print analysis summary
+        analyzer.print_cluster_summary()
+        
+        # Show completion message
+        console.print(f"\n[bold green]✅ Analysis Complete![/bold green]")
+        console.print(f"📄 Visualization data: {json_output}")
+        console.print(f"📊 Plots: {plot_output}")
+        console.print(f"\n💡 Next step: uv run serve_generic.py --dir {args.output_dir}")
+        
+    except Exception as e:
+        console.print(f"❌ Error during analysis: {e}")
+        raise
+    finally:
+        analyzer.close()
+
+if __name__ == "__main__":
+    main()
