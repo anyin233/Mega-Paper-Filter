@@ -19,6 +19,8 @@ import warnings
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+import asyncio
+from typing import Dict, Any, Optional
 
 from database import PaperDatabase
 
@@ -39,6 +41,7 @@ class DatabaseClusteringAnalyzer:
         self.vectorizer = None
         self.cluster_labels = None
         self.cluster_analysis = None
+        self.cluster_names = None  # Store LLM-generated cluster names
         self.pca = None
         self.features_2d = None
         
@@ -243,6 +246,66 @@ class DatabaseClusteringAnalyzer:
         console.print(f"✅ Analyzed {len(self.cluster_analysis)} clusters")
         return self.cluster_analysis
     
+    async def generate_cluster_names(self, openai_config: Optional[Dict[str, Any]] = None):
+        """Generate LLM-based names for clusters."""
+        if not self.cluster_analysis:
+            console.print("❌ No cluster analysis available. Run analyze_clusters() first.")
+            return
+            
+        if not openai_config or not openai_config.get('api_key'):
+            console.print("⚠️ OpenAI configuration not provided. Skipping cluster naming.")
+            return
+        
+        console.print("🤖 Generating cluster names using LLM...")
+        
+        try:
+            # Import OpenAI functions
+            import sys
+            sys.path.append(str(Path(__file__).parent / "src"))
+            from openai_api import get_async_openai_client, get_cluster_name
+            
+            # Create async client
+            client = get_async_openai_client(openai_config["api_key"], openai_config.get("base_url", "https://api.openai.com/v1"))
+            model = openai_config.get("model", "gpt-4o-mini")
+            
+            self.cluster_names = {}
+            
+            for cluster_id, analysis in self.cluster_analysis.items():
+                try:
+                    console.print(f"  🏷️ Naming cluster {cluster_id}...")
+                    
+                    # Get cluster name from LLM
+                    naming_response = await get_cluster_name(client, analysis, model)
+                    naming_data = json.loads(naming_response)
+                    
+                    self.cluster_names[cluster_id] = {
+                        'name': naming_data.get('name', f'Cluster {cluster_id}'),
+                        'description': naming_data.get('description', 'No description available')
+                    }
+                    
+                    console.print(f"    ✅ {self.cluster_names[cluster_id]['name']}")
+                    
+                except Exception as e:
+                    console.print(f"    ❌ Failed to name cluster {cluster_id}: {e}")
+                    self.cluster_names[cluster_id] = {
+                        'name': f'Cluster {cluster_id}',
+                        'description': 'Automated naming failed'
+                    }
+            
+            console.print(f"✅ Generated names for {len(self.cluster_names)} clusters")
+            
+        except Exception as e:
+            console.print(f"❌ Error during cluster naming: {e}")
+            # Fallback to generic names
+            self.cluster_names = {}
+            for cluster_id in self.cluster_analysis.keys():
+                self.cluster_names[cluster_id] = {
+                    'name': f'Cluster {cluster_id}',
+                    'description': 'LLM naming unavailable'
+                }
+        
+        return self.cluster_names
+    
     def generate_visualization_data(self, output_path: str, dataset_name: str = None):
         """Generate JSON data for web visualization."""
         console.print("📄 Generating visualization data...")
@@ -273,12 +336,22 @@ class DatabaseClusteringAnalyzer:
             # Use TF-IDF features as main keywords for consistency
             top_keywords = [(kw, float(score)) for kw, score in analysis['top_tfidf_features'][:10]]
             
-            cluster_info[str(cluster_id)] = {
+            cluster_data = {
                 'size': analysis['size'],
                 'top_keywords': top_keywords,
                 'sample_titles': analysis['sample_titles'],
                 'common_paper_keywords': analysis['common_keywords']
             }
+            
+            # Add LLM-generated names if available
+            if self.cluster_names and cluster_id in self.cluster_names:
+                cluster_data['name'] = self.cluster_names[cluster_id]['name']
+                cluster_data['description'] = self.cluster_names[cluster_id]['description']
+            else:
+                cluster_data['name'] = f'Cluster {cluster_id}'
+                cluster_data['description'] = f'Cluster {cluster_id} with {analysis["size"]} papers'
+            
+            cluster_info[str(cluster_id)] = cluster_data
         
         # Create metadata
         db_stats = self.db.get_statistics()
@@ -318,7 +391,17 @@ class DatabaseClusteringAnalyzer:
         ))
         
         for cluster_id, analysis in self.cluster_analysis.items():
-            console.print(f"\n[bold cyan]Cluster {cluster_id}[/bold cyan] ({analysis['size']} papers)")
+            # Display cluster name if available
+            cluster_title = f"[bold cyan]Cluster {cluster_id}[/bold cyan]"
+            if self.cluster_names and cluster_id in self.cluster_names:
+                cluster_name = self.cluster_names[cluster_id]['name']
+                cluster_desc = self.cluster_names[cluster_id]['description']
+                cluster_title = f"[bold cyan]Cluster {cluster_id}: {cluster_name}[/bold cyan]"
+                console.print(f"\n{cluster_title} ({analysis['size']} papers)")
+                console.print(f"[italic]{cluster_desc}[/italic]")
+            else:
+                console.print(f"\n{cluster_title} ({analysis['size']} papers)")
+            
             console.print("─" * 50)
             
             # Top TF-IDF features
@@ -418,6 +501,10 @@ def main():
     parser.add_argument('--show-plots', action='store_true', help='Display plots instead of saving')
     parser.add_argument('--min-papers', type=int, default=5, help='Minimum papers required')
     parser.add_argument('--list-datasets', action='store_true', help='List available datasets and exit')
+    parser.add_argument('--openai-api-key', help='OpenAI API key for cluster naming')
+    parser.add_argument('--openai-base-url', default='https://api.openai.com/v1', help='OpenAI base URL')
+    parser.add_argument('--openai-model', default='gpt-4o-mini', help='OpenAI model to use')
+    parser.add_argument('--skip-naming', action='store_true', help='Skip LLM-based cluster naming')
     
     args = parser.parse_args()
     
@@ -471,43 +558,61 @@ def main():
             border_style="blue"
         ))
         
-        # Load papers
-        df = analyzer.load_papers_from_db(args.dataset, args.min_papers)
+        # Run analysis - create an async function to handle the analysis
+        async def run_analysis():
+            # Load papers
+            df = analyzer.load_papers_from_db(args.dataset, args.min_papers)
+            
+            # Perform analysis
+            analyzer.create_features()
+            optimal_k, inertias, silhouette_scores, k_range = analyzer.find_optimal_clusters()
+            analyzer.perform_clustering(optimal_k)
+            analyzer.create_pca_projection()
+            analyzer.analyze_clusters()
+            
+            # Generate cluster names if OpenAI configuration is provided
+            if not args.skip_naming and args.openai_api_key:
+                openai_config = {
+                    'api_key': args.openai_api_key,
+                    'base_url': args.openai_base_url,
+                    'model': args.openai_model
+                }
+                await analyzer.generate_cluster_names(openai_config)
+            elif not args.skip_naming:
+                console.print("⚠️ OpenAI API key not provided. Use --openai-api-key to enable cluster naming.")
+            
+            # Generate outputs
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(exist_ok=True)
+            
+            output_prefix = output_dir / args.output_prefix
+            
+            # Generate visualization data for web
+            json_output = f"{output_prefix}_data.json"
+            analyzer.generate_visualization_data(json_output, args.dataset)
+            
+            # Create plots
+            plot_output = f"{output_prefix}_plots.png"
+            fig = analyzer.create_visualizations(plot_output, args.dataset)
+            
+            if args.show_plots:
+                plt.show()
+            else:
+                plt.close(fig)
+            
+            # Print analysis summary
+            analyzer.print_cluster_summary()
+            
+            # Show completion message
+            console.print(f"\n[bold green]✅ Analysis Complete![/bold green]")
+            console.print(f"📄 Visualization data: {json_output}")
+            console.print(f"📊 Plots: {plot_output}")
+            if analyzer.cluster_names:
+                console.print("🏷️ Cluster names generated using LLM")
+            console.print(f"\n💡 Next step: uv run serve_generic.py --dir {args.output_dir}")
         
-        # Perform analysis
-        analyzer.create_features()
-        optimal_k, inertias, silhouette_scores, k_range = analyzer.find_optimal_clusters()
-        analyzer.perform_clustering(optimal_k)
-        analyzer.create_pca_projection()
-        analyzer.analyze_clusters()
-        
-        # Generate outputs
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(exist_ok=True)
-        
-        output_prefix = output_dir / args.output_prefix
-        
-        # Generate visualization data for web
-        json_output = f"{output_prefix}_data.json"
-        analyzer.generate_visualization_data(json_output, args.dataset)
-        
-        # Create plots
-        plot_output = f"{output_prefix}_plots.png"
-        fig = analyzer.create_visualizations(plot_output, args.dataset)
-        
-        if args.show_plots:
-            plt.show()
-        else:
-            plt.close(fig)
-        
-        # Print analysis summary
-        analyzer.print_cluster_summary()
-        
-        # Show completion message
-        console.print(f"\n[bold green]✅ Analysis Complete![/bold green]")
-        console.print(f"📄 Visualization data: {json_output}")
-        console.print(f"📊 Plots: {plot_output}")
-        console.print(f"\n💡 Next step: uv run serve_generic.py --dir {args.output_dir}")
+        # Run the async analysis
+        asyncio.run(run_analysis())
         
     except Exception as e:
         console.print(f"❌ Error during analysis: {e}")

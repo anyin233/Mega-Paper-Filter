@@ -18,7 +18,7 @@ scholar_config.txt
 *.json
 *.png
 *.csv
-*.html
+
 papers_with_abstracts.txt
 
 # Development tools (optional)
@@ -26,3 +26,5 @@ dev-tools/
 
 # Temporary files
 *.tmp
+
+node_modules

@@ -17,4 +17,10 @@ dependencies = [
     "seaborn>=0.13.2",
     "selenium>=4.11.0",
     "webdriver-manager>=4.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "python-multipart>=0.0.6",
+    "websockets>=11.0.0",
+    "aiofiles>=23.0.0",
+    "cryptography>=41.0.0",
 ]

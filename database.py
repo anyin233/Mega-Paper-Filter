@@ -69,6 +69,28 @@ class PaperDatabase:
                 )
             ''')
             
+            # Clustering results table
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS clustering_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    dataset_filter TEXT,  -- Dataset name that was clustered, NULL for all
+                    total_papers INTEGER NOT NULL,
+                    total_clusters INTEGER NOT NULL,
+                    clustering_method TEXT DEFAULT 'K-means',
+                    feature_extraction TEXT DEFAULT 'TF-IDF',
+                    max_features INTEGER,
+                    max_k INTEGER,
+                    min_papers INTEGER,
+                    silhouette_score REAL,
+                    pca_explained_variance TEXT,  -- JSON array of explained variance ratios
+                    visualization_data TEXT,  -- JSON blob of the full clustering data
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             # Create indexes for better performance
             self.conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_papers_paper_id ON papers(paper_id)
@@ -78,6 +100,15 @@ class PaperDatabase:
             ''')
             self.conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_papers_source_dataset ON papers(source_dataset)
+            ''')
+            self.conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_clustering_results_job_id ON clustering_results(job_id)
+            ''')
+            self.conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_clustering_results_dataset_filter ON clustering_results(dataset_filter)
+            ''')
+            self.conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_clustering_results_created_at ON clustering_results(created_at)
             ''')
     
     def _generate_content_hash(self, title: str, abstract: str = "") -> str:
@@ -371,10 +402,316 @@ class PaperDatabase:
             ''')
             return cursor.rowcount
     
+    def find_duplicates(self, paper_id: str = None, title: str = None, doi: str = None) -> List[Dict]:
+        """
+        Find potential duplicates based on DOI, title, or content hash.
+        
+        Args:
+            paper_id: Specific paper ID to check
+            title: Title to check for duplicates
+            doi: DOI to check for duplicates
+            
+        Returns:
+            List of duplicate papers
+        """
+        duplicates = []
+        
+        if doi and doi.strip():
+            cursor = self.conn.execute('''
+                SELECT * FROM papers WHERE LOWER(doi) = LOWER(?) AND doi != ''
+            ''', (doi.strip(),))
+            duplicates.extend([dict(row) for row in cursor.fetchall()])
+        
+        if title and title.strip():
+            content_hash = self._generate_content_hash(title, "")
+            cursor = self.conn.execute('''
+                SELECT * FROM papers WHERE content_hash = ?
+            ''', (content_hash,))
+            duplicates.extend([dict(row) for row in cursor.fetchall()])
+        
+        if paper_id:
+            cursor = self.conn.execute('''
+                SELECT * FROM papers WHERE paper_id = ?
+            ''', (paper_id,))
+            duplicates.extend([dict(row) for row in cursor.fetchall()])
+        
+        # Remove duplicates from the results list itself
+        seen_ids = set()
+        unique_duplicates = []
+        for paper in duplicates:
+            if paper['id'] not in seen_ids:
+                unique_duplicates.append(paper)
+                seen_ids.add(paper['id'])
+        
+        return unique_duplicates
+    
+    def merge_datasets(self, source_dataset: str, target_dataset: str, delete_source: bool = True) -> Dict[str, int]:
+        """
+        Merge one dataset into another, handling duplicates.
+        
+        Args:
+            source_dataset: Name of dataset to merge from
+            target_dataset: Name of dataset to merge into
+            delete_source: Whether to delete the source dataset after merge
+            
+        Returns:
+            Dictionary with merge statistics
+        """
+        stats = {
+            "moved_papers": 0,
+            "duplicates_found": 0,
+            "duplicates_removed": 0,
+            "source_papers": 0,
+            "target_papers": 0
+        }
+        
+        with self.conn:
+            # Get initial counts
+            cursor = self.conn.execute('''
+                SELECT COUNT(*) as count FROM papers WHERE source_dataset = ?
+            ''', (source_dataset,))
+            stats["source_papers"] = cursor.fetchone()[0]
+            
+            cursor = self.conn.execute('''
+                SELECT COUNT(*) as count FROM papers WHERE source_dataset = ?
+            ''', (target_dataset,))
+            stats["target_papers"] = cursor.fetchone()[0]
+            
+            if stats["source_papers"] == 0:
+                return stats
+            
+            # Find duplicates between datasets
+            cursor = self.conn.execute('''
+                SELECT s.id as source_id, t.id as target_id
+                FROM papers s, papers t
+                WHERE s.source_dataset = ? 
+                AND t.source_dataset = ?
+                AND (
+                    (s.content_hash = t.content_hash) OR
+                    (s.doi != '' AND t.doi != '' AND LOWER(s.doi) = LOWER(t.doi))
+                )
+            ''', (source_dataset, target_dataset))
+            
+            duplicates = cursor.fetchall()
+            stats["duplicates_found"] = len(duplicates)
+            
+            # Remove duplicate papers from source dataset
+            if duplicates:
+                duplicate_ids = [str(dup[0]) for dup in duplicates]  # source_ids
+                placeholders = ','.join(['?'] * len(duplicate_ids))
+                cursor = self.conn.execute(f'''
+                    DELETE FROM papers WHERE id IN ({placeholders})
+                ''', duplicate_ids)
+                stats["duplicates_removed"] = cursor.rowcount
+            
+            # Move remaining papers from source to target dataset
+            cursor = self.conn.execute('''
+                UPDATE papers 
+                SET source_dataset = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE source_dataset = ?
+            ''', (target_dataset, source_dataset))
+            stats["moved_papers"] = cursor.rowcount
+            
+            # Update dataset statistics
+            self.update_dataset_stats(target_dataset)
+            
+            # Delete source dataset if requested
+            if delete_source:
+                self.conn.execute('''
+                    DELETE FROM datasets WHERE name = ?
+                ''', (source_dataset,))
+        
+        return stats
+    
+    def add_paper_with_deduplication(self, 
+                                   paper_id: str,
+                                   title: str,
+                                   authors: List[str] = None,
+                                   abstract: str = "",
+                                   url: str = "",
+                                   doi: str = "",
+                                   publication_year: int = None,
+                                   venue: str = "",
+                                   summary: str = "",
+                                   keywords: List[str] = None,
+                                   source_dataset: str = "default") -> Dict[str, any]:
+        """
+        Add a paper with enhanced deduplication check.
+        
+        Returns:
+            Dictionary with status and paper info
+        """
+        # Check for existing duplicates
+        duplicates = self.find_duplicates(paper_id=paper_id, title=title, doi=doi)
+        
+        if duplicates:
+            return {
+                "status": "duplicate",
+                "message": f"Paper already exists (found {len(duplicates)} duplicates)",
+                "existing_papers": duplicates,
+                "paper_id": None
+            }
+        
+        # Add the paper
+        db_id = self.add_paper(
+            paper_id=paper_id,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            url=url,
+            doi=doi,
+            publication_year=publication_year,
+            venue=venue,
+            summary=summary,
+            keywords=keywords,
+            source_dataset=source_dataset
+        )
+        
+        if db_id:
+            return {
+                "status": "added",
+                "message": "Paper added successfully",
+                "existing_papers": [],
+                "paper_id": paper_id
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to add paper",
+                "existing_papers": [],
+                "paper_id": None
+            }
+    
     def close(self):
         """Close database connection."""
         if self.conn:
             self.conn.close()
+    
+    # Clustering results methods
+    def save_clustering_result(self, 
+                             job_id: str,
+                             name: str,
+                             description: str = "",
+                             dataset_filter: str = None,
+                             total_papers: int = 0,
+                             total_clusters: int = 0,
+                             clustering_method: str = "K-means",
+                             feature_extraction: str = "TF-IDF",
+                             max_features: int = None,
+                             max_k: int = None,
+                             min_papers: int = None,
+                             silhouette_score: float = None,
+                             pca_explained_variance: List[float] = None,
+                             visualization_data: Dict = None) -> int:
+        """
+        Save clustering result to database.
+        
+        Args:
+            job_id: Unique job identifier
+            name: Human-readable name for the clustering result
+            description: Optional description
+            dataset_filter: Dataset name that was clustered (None for all datasets)
+            total_papers: Number of papers clustered
+            total_clusters: Number of clusters found
+            clustering_method: Method used (e.g., 'K-means')
+            feature_extraction: Feature extraction method (e.g., 'TF-IDF')
+            max_features: Maximum features parameter
+            max_k: Maximum K parameter
+            min_papers: Minimum papers parameter
+            silhouette_score: Clustering quality score
+            pca_explained_variance: PCA explained variance ratios
+            visualization_data: Full clustering visualization data
+            
+        Returns:
+            Database ID of the saved result
+        """
+        pca_json = json.dumps(pca_explained_variance) if pca_explained_variance else None
+        viz_json = json.dumps(visualization_data) if visualization_data else None
+        
+        with self.conn:
+            cursor = self.conn.execute('''
+                INSERT OR REPLACE INTO clustering_results (
+                    job_id, name, description, dataset_filter, 
+                    total_papers, total_clusters, clustering_method, feature_extraction,
+                    max_features, max_k, min_papers, silhouette_score,
+                    pca_explained_variance, visualization_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (job_id, name, description, dataset_filter,
+                  total_papers, total_clusters, clustering_method, feature_extraction,
+                  max_features, max_k, min_papers, silhouette_score,
+                  pca_json, viz_json))
+            
+            return cursor.lastrowid
+    
+    def get_clustering_results(self) -> List[Dict]:
+        """Get all clustering results with basic metadata."""
+        cursor = self.conn.execute('''
+            SELECT id, job_id, name, description, dataset_filter,
+                   total_papers, total_clusters, clustering_method,
+                   feature_extraction, silhouette_score, created_at
+            FROM clustering_results
+            ORDER BY created_at DESC
+        ''')
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_clustering_result(self, result_id: int = None, job_id: str = None) -> Optional[Dict]:
+        """
+        Get a specific clustering result by ID or job_id.
+        
+        Args:
+            result_id: Database ID of the result
+            job_id: Job ID of the result
+            
+        Returns:
+            Clustering result with full visualization data
+        """
+        if result_id is not None:
+            cursor = self.conn.execute('''
+                SELECT * FROM clustering_results WHERE id = ?
+            ''', (result_id,))
+        elif job_id is not None:
+            cursor = self.conn.execute('''
+                SELECT * FROM clustering_results WHERE job_id = ?
+            ''', (job_id,))
+        else:
+            return None
+        
+        row = cursor.fetchone()
+        if not row:
+            return None
+        
+        result = dict(row)
+        
+        # Parse JSON fields
+        if result['pca_explained_variance']:
+            result['pca_explained_variance'] = json.loads(result['pca_explained_variance'])
+        
+        if result['visualization_data']:
+            result['visualization_data'] = json.loads(result['visualization_data'])
+        
+        return result
+    
+    def delete_clustering_result(self, result_id: int) -> bool:
+        """Delete a clustering result by ID."""
+        with self.conn:
+            cursor = self.conn.execute('''
+                DELETE FROM clustering_results WHERE id = ?
+            ''', (result_id,))
+            return cursor.rowcount > 0
+    
+    def get_clustering_results_by_dataset(self, dataset_name: str) -> List[Dict]:
+        """Get clustering results filtered by dataset."""
+        cursor = self.conn.execute('''
+            SELECT id, job_id, name, description, dataset_filter,
+                   total_papers, total_clusters, clustering_method,
+                   feature_extraction, silhouette_score, created_at
+            FROM clustering_results
+            WHERE dataset_filter = ? OR dataset_filter IS NULL
+            ORDER BY created_at DESC
+        ''', (dataset_name,))
+        
+        return [dict(row) for row in cursor.fetchall()]
     
     def __enter__(self):
         return self
