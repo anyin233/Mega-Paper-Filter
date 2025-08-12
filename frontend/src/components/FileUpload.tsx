@@ -90,8 +90,14 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onError }) =>
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (file) {
-      if (file.type !== 'text/csv' && !file.name.endsWith('.csv')) {
-        onError?.('Please select a CSV file');
+      const fileName = file.name.toLowerCase();
+      const isValidFile = file.type === 'text/csv' || 
+                         fileName.endsWith('.csv') || 
+                         fileName.endsWith('.bib') || 
+                         fileName.endsWith('.bibtex');
+      
+      if (!isValidFile) {
+        onError?.('Please select a CSV or BibTeX file (.csv, .bib, .bibtex)');
         return;
       }
       setSelectedFile(file);
@@ -103,6 +109,8 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onError }) =>
     onDrop,
     accept: {
       'text/csv': ['.csv'],
+      'application/x-bibtex': ['.bib', '.bibtex'],
+      'text/x-bibtex': ['.bib', '.bibtex'],
     },
     multiple: false,
   });
@@ -217,10 +225,10 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onError }) =>
           <input {...getInputProps()} />
           <CloudUploadIcon sx={{ fontSize: 48, color: 'primary.main', mb: 2 }} />
           <Typography variant="h6" gutterBottom>
-            {isDragActive ? 'Drop the CSV file here' : 'Drag & drop a CSV file here'}
+            {isDragActive ? 'Drop the file here' : 'Drag & drop a file here'}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            or click to select a file
+            Supports CSV and BibTeX files (.csv, .bib, .bibtex)
           </Typography>
           <Button variant="outlined" sx={{ mt: 2 }}>
             Select File
@@ -262,6 +270,8 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onError }) =>
           {selectedFile && (
             <Alert severity="info" sx={{ mb: 2 }}>
               Selected file: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+              <br />
+              File type: {selectedFile.name.toLowerCase().endsWith('.csv') ? 'CSV (Comma-Separated Values)' : 'BibTeX (Bibliography)'}
             </Alert>
           )}
           

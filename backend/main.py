@@ -86,9 +86,13 @@ class DatasetResponse(BaseModel):
 
 class ClusteringConfig(BaseModel):
     dataset_name: Optional[str] = Field(None, description="Dataset to cluster (None for all)")
-    max_features: int = Field(1000, description="Maximum TF-IDF features")
+    max_features: int = Field(1000, description="Maximum TF-IDF features (for traditional clustering)")
     max_k: int = Field(15, description="Maximum number of clusters to test")
     min_papers: int = Field(5, description="Minimum papers required for clustering")
+    clustering_method: str = Field("traditional", description="Clustering method: 'traditional' or 'llm'")
+    llm_model: Optional[str] = Field("gpt-4o", description="LLM model for semantic clustering")
+    custom_model_name: Optional[str] = Field(None, description="Custom model name when llm_model is 'custom'")
+    max_papers_llm: int = Field(100, description="Maximum papers for LLM clustering (to manage costs)")
 
 class JobStatus(BaseModel):
     job_id: str
@@ -347,10 +351,16 @@ async def upload_papers(
     description: str = Query("", description="Dataset description"),
     upload_to_existing: bool = Query(False, description="Upload to existing dataset (enable deduplication)")
 ):
-    """Upload a CSV file containing papers."""
+    """Upload a CSV or BibTeX file containing papers."""
     # Validate file type
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="Only CSV files are supported")
+    file_extension = Path(file.filename).suffix.lower()
+    supported_extensions = ['.csv', '.bib', '.bibtex']
+    
+    if file_extension not in supported_extensions:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type. Supported formats: {', '.join(supported_extensions)}"
+        )
     
     # If uploading to existing dataset, verify it exists
     if upload_to_existing:
@@ -365,17 +375,23 @@ async def upload_papers(
     # Create a job ID
     job_id = str(uuid.uuid4())
     
-    # Save uploaded file temporarily
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp_file:
+    # Save uploaded file temporarily with appropriate extension
+    suffix = file_extension if file_extension in ['.bib', '.bibtex'] else '.csv'
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
         content = await file.read()
         tmp_file.write(content)
         tmp_file.flush()
         temp_path = tmp_file.name
     
-    # Start background processing
-    background_tasks.add_task(process_csv_file, job_id, temp_path, dataset_name, description, upload_to_existing)
+    # Start background processing based on file type
+    if file_extension in ['.bib', '.bibtex']:
+        background_tasks.add_task(process_bibtex_file_async, job_id, temp_path, dataset_name, description, upload_to_existing)
+        message = "BibTeX file upload started"
+    else:
+        background_tasks.add_task(process_csv_file, job_id, temp_path, dataset_name, description, upload_to_existing)
+        message = "CSV file upload started"
     
-    return {"job_id": job_id, "message": "File upload started", "status": "pending"}
+    return {"job_id": job_id, "message": message, "status": "pending"}
 
 async def process_csv_file(job_id: str, file_path: str, dataset_name: str, description: str, upload_to_existing: bool = False):
     """Background task to process uploaded CSV file."""
@@ -508,6 +524,42 @@ async def process_csv_with_deduplication(file_path: str, db: PaperDatabase, data
     
     return stats
 
+async def process_bibtex_file_async(job_id: str, file_path: str, dataset_name: str, description: str, upload_to_existing: bool = False):
+    """Background task to process uploaded BibTeX file."""
+    try:
+        await update_job_status(job_id, "running", 0.1, "Starting BibTeX processing...")
+        
+        # Import BibTeX processing functions
+        import sys
+        sys.path.append(str(Path(__file__).parent.parent))
+        from parse_bibtex import process_bibtex_file
+        
+        db = get_db()
+        try:
+            # Process BibTeX file
+            result = process_bibtex_file(
+                file_path, 
+                db, 
+                dataset_name, 
+                description,
+                dry_run=False,
+                upload_to_existing=upload_to_existing
+            )
+            
+            await update_job_status(job_id, "completed", 1.0, "BibTeX processing completed", result=result['statistics'])
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        await update_job_status(job_id, "failed", 0.0, f"Error processing BibTeX: {str(e)}", error=str(e))
+    finally:
+        # Clean up temporary file
+        try:
+            os.unlink(file_path)
+        except:
+            pass
+
 # Clustering endpoints
 @app.post("/api/clustering/run")
 async def run_clustering(background_tasks: BackgroundTasks, config: ClusteringConfig):
@@ -524,113 +576,219 @@ async def perform_clustering(job_id: str, config: ClusteringConfig):
     try:
         await update_job_status(job_id, "running", 0.1, "Initializing clustering...")
         
-        # Create clustering configuration
-        clustering_config = {
-            'tfidf_params': {
-                'max_features': config.max_features,
-                'stop_words': 'english',
-                'ngram_range': (1, 2),
-                'min_df': 2,
-                'max_df': 0.8
-            },
-            'clustering_params': {
-                'max_k': config.max_k,
-                'random_state': 42,
-                'n_init': 10
-            },
-            'pca_params': {
-                'n_components': 2,
-                'random_state': 42
-            }
-        }
-        
-        # Initialize analyzer
-        analyzer = DatabaseClusteringAnalyzer(DB_PATH, clustering_config)
-        
-        try:
-            await update_job_status(job_id, "running", 0.2, "Loading papers from database...")
-            
-            # Load papers
-            df = analyzer.load_papers_from_db(config.dataset_name, config.min_papers)
-            
-            await update_job_status(job_id, "running", 0.4, "Creating features...")
-            analyzer.create_features()
-            
-            await update_job_status(job_id, "running", 0.6, "Finding optimal clusters...")
-            optimal_k, inertias, silhouette_scores, k_range = analyzer.find_optimal_clusters()
-            
-            await update_job_status(job_id, "running", 0.7, "Performing clustering...")
-            analyzer.perform_clustering(optimal_k)
-            
-            await update_job_status(job_id, "running", 0.8, "Creating visualizations...")
-            analyzer.create_pca_projection()
-            
-            await update_job_status(job_id, "running", 0.85, "Analyzing clusters...")
-            analyzer.analyze_clusters()
-            
-            # Generate cluster names using LLM if OpenAI is configured
-            settings_manager = get_settings_manager()
-            openai_config = settings_manager.get_openai_config()
-            
-            if openai_config.get('enabled') and openai_config.get('api_key'):
-                await update_job_status(job_id, "running", 0.9, "Generating cluster names...")
-                await analyzer.generate_cluster_names(openai_config)
-            else:
-                await update_job_status(job_id, "running", 0.9, "Skipping cluster naming (OpenAI not configured)...")
-            
-            await update_job_status(job_id, "running", 0.95, "Finalizing results...")
-            
-            # Generate visualization data
-            output_path = f"clustering_results_{job_id}.json"
-            json_data = analyzer.generate_visualization_data(output_path, config.dataset_name)
-            
-            # Save clustering result to database
-            try:
-                db = get_db()
-                dataset_name = config.dataset_name or "All Datasets"
-                result_name = f"Clustering - {dataset_name} ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
-                result_description = f"K-means clustering with {config.max_features} features, max {config.max_k} clusters"
-                
-                db.save_clustering_result(
-                    job_id=job_id,
-                    name=result_name,
-                    description=result_description,
-                    dataset_filter=config.dataset_name,
-                    total_papers=len(df),
-                    total_clusters=optimal_k,
-                    clustering_method="K-means",
-                    feature_extraction="TF-IDF",
-                    max_features=config.max_features,
-                    max_k=config.max_k,
-                    min_papers=config.min_papers,
-                    silhouette_score=max(silhouette_scores) if silhouette_scores else None,
-                    pca_explained_variance=analyzer.pca.explained_variance_ratio_.tolist() if hasattr(analyzer, 'pca') else None,
-                    visualization_data=json_data
-                )
-                db.close()
-            except Exception as e:
-                logger.error(f"Failed to save clustering result to database: {e}")
-            
-            await update_job_status(
-                job_id, 
-                "completed", 
-                1.0, 
-                "Clustering completed successfully",
-                result={
-                    "output_file": output_path,
-                    "total_papers": len(df),
-                    "total_clusters": optimal_k,
-                    "silhouette_score": max(silhouette_scores) if silhouette_scores else None,
-                    "visualization_data": json_data,
-                    "cluster_names_generated": analyzer.cluster_names is not None
-                }
-            )
-            
-        finally:
-            analyzer.close()
+        # Check clustering method
+        if config.clustering_method == "llm":
+            # Perform LLM-based clustering
+            await perform_llm_clustering(job_id, config)
+        else:
+            # Perform traditional clustering
+            await perform_traditional_clustering(job_id, config)
             
     except Exception as e:
         await update_job_status(job_id, "failed", 0.0, f"Clustering failed: {str(e)}", error=str(e))
+
+async def perform_traditional_clustering(job_id: str, config: ClusteringConfig):
+    """Background task to perform traditional K-means clustering analysis."""
+    # Create clustering configuration
+    clustering_config = {
+        'tfidf_params': {
+            'max_features': config.max_features,
+            'stop_words': 'english',
+            'ngram_range': (1, 2),
+            'min_df': 2,
+            'max_df': 0.8
+        },
+        'clustering_params': {
+            'max_k': config.max_k,
+            'random_state': 42,
+            'n_init': 10
+        },
+        'pca_params': {
+            'n_components': 2,
+            'random_state': 42
+        }
+    }
+    
+    # Initialize analyzer
+    analyzer = DatabaseClusteringAnalyzer(DB_PATH, clustering_config)
+    
+    try:
+        await update_job_status(job_id, "running", 0.2, "Loading papers from database...")
+        
+        # Load papers
+        df = analyzer.load_papers_from_db(config.dataset_name, config.min_papers)
+        
+        await update_job_status(job_id, "running", 0.4, "Creating features...")
+        analyzer.create_features()
+        
+        await update_job_status(job_id, "running", 0.6, "Finding optimal clusters...")
+        optimal_k, inertias, silhouette_scores, k_range = analyzer.find_optimal_clusters()
+        
+        await update_job_status(job_id, "running", 0.7, "Performing clustering...")
+        analyzer.perform_clustering(optimal_k)
+        
+        await update_job_status(job_id, "running", 0.8, "Creating visualizations...")
+        analyzer.create_pca_projection()
+        
+        await update_job_status(job_id, "running", 0.85, "Analyzing clusters...")
+        analyzer.analyze_clusters()
+        
+        # Generate cluster names using LLM if OpenAI is configured
+        settings_manager = get_settings_manager()
+        openai_config = settings_manager.get_openai_config()
+        
+        if openai_config.get('enabled') and openai_config.get('api_key'):
+            await update_job_status(job_id, "running", 0.9, "Generating cluster names...")
+            await analyzer.generate_cluster_names(openai_config)
+        else:
+            await update_job_status(job_id, "running", 0.9, "Skipping cluster naming (OpenAI not configured)...")
+        
+        await update_job_status(job_id, "running", 0.95, "Finalizing results...")
+        
+        # Generate visualization data
+        output_path = f"clustering_results_{job_id}.json"
+        json_data = analyzer.generate_visualization_data(output_path, config.dataset_name)
+        
+        # Save clustering result to database
+        try:
+            db = get_db()
+            dataset_name = config.dataset_name or "All Datasets"
+            result_name = f"Traditional Clustering - {dataset_name} ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+            result_description = f"K-means clustering with {config.max_features} features, max {config.max_k} clusters"
+            
+            db.save_clustering_result(
+                job_id=job_id,
+                name=result_name,
+                description=result_description,
+                dataset_filter=config.dataset_name,
+                total_papers=len(df),
+                total_clusters=optimal_k,
+                clustering_method="K-means",
+                feature_extraction="TF-IDF",
+                max_features=config.max_features,
+                max_k=config.max_k,
+                min_papers=config.min_papers,
+                silhouette_score=max(silhouette_scores) if silhouette_scores else None,
+                pca_explained_variance=analyzer.pca.explained_variance_ratio_.tolist() if hasattr(analyzer, 'pca') else None,
+                visualization_data=json_data
+            )
+            db.close()
+        except Exception as e:
+            logger.error(f"Failed to save clustering result to database: {e}")
+        
+        await update_job_status(
+            job_id, 
+            "completed", 
+            1.0, 
+            "Traditional clustering completed successfully",
+            result={
+                "output_file": output_path,
+                "total_papers": len(df),
+                "total_clusters": optimal_k,
+                "silhouette_score": max(silhouette_scores) if silhouette_scores else None,
+                "visualization_data": json_data,
+                "cluster_names_generated": analyzer.cluster_names is not None,
+                "clustering_method": "traditional"
+            }
+        )
+        
+    finally:
+        analyzer.close()
+
+async def perform_llm_clustering(job_id: str, config: ClusteringConfig):
+    """Background task to perform LLM-based semantic clustering."""
+    # Get OpenAI configuration
+    settings_manager = get_settings_manager()
+    openai_config = settings_manager.get_openai_config()
+    
+    if not openai_config.get('enabled') or not openai_config.get('api_key'):
+        raise ValueError("OpenAI is not configured or enabled. LLM clustering requires OpenAI API access.")
+    
+    # Override model if specified in config
+    if config.llm_model == 'custom':
+        if not config.custom_model_name or not config.custom_model_name.strip():
+            raise ValueError("Custom model name is required when 'custom' model is selected.")
+        openai_config['model'] = config.custom_model_name.strip()
+    elif config.llm_model:
+        openai_config['model'] = config.llm_model
+    
+    # Import LLM clustering analyzer
+    import sys
+    sys.path.append(str(Path(__file__).parent.parent))
+    from llm_cluster_papers import LLMClusteringAnalyzer
+    
+    # Initialize LLM analyzer
+    analyzer = LLMClusteringAnalyzer(DB_PATH, openai_config)
+    
+    try:
+        await update_job_status(job_id, "running", 0.2, "Loading papers for LLM clustering...")
+        
+        # Load papers (limited for LLM processing)
+        df = analyzer.load_papers_from_db(
+            dataset_name=config.dataset_name, 
+            min_papers=config.min_papers,
+            max_papers=config.max_papers_llm
+        )
+        
+        await update_job_status(job_id, "running", 0.4, "Performing LLM-based semantic clustering...")
+        
+        # Perform LLM clustering
+        clustering_result = await analyzer.perform_llm_clustering(config.max_k)
+        
+        await update_job_status(job_id, "running", 0.8, "Generating visualization data...")
+        
+        # Generate visualization data
+        output_path = f"llm_clustering_results_{job_id}.json"
+        json_data = analyzer.generate_visualization_data(output_path, config.dataset_name)
+        
+        await update_job_status(job_id, "running", 0.9, "Saving results to database...")
+        
+        # Save clustering result to database
+        try:
+            db = get_db()
+            dataset_name = config.dataset_name or "All Datasets"
+            result_name = f"LLM Clustering - {dataset_name} ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+            result_description = f"LLM semantic clustering with {openai_config.get('model', 'gpt-4o')} model"
+            
+            db.save_clustering_result(
+                job_id=job_id,
+                name=result_name,
+                description=result_description,
+                dataset_filter=config.dataset_name,
+                total_papers=len(df),
+                total_clusters=clustering_result['total_clusters'],
+                clustering_method=f"LLM-{openai_config.get('model', 'gpt-4o')}",
+                feature_extraction="OpenAI Language Model",
+                max_features=None,  # Not applicable for LLM
+                max_k=config.max_k,
+                min_papers=config.min_papers,
+                silhouette_score=None,  # Not applicable for LLM clustering
+                pca_explained_variance=None,  # Not applicable for LLM clustering
+                visualization_data=json_data
+            )
+            db.close()
+        except Exception as e:
+            logger.error(f"Failed to save LLM clustering result to database: {e}")
+        
+        await update_job_status(
+            job_id, 
+            "completed", 
+            1.0, 
+            "LLM clustering completed successfully",
+            result={
+                "output_file": output_path,
+                "total_papers": len(df),
+                "total_clusters": clustering_result['total_clusters'],
+                "visualization_data": json_data,
+                "clustering_method": "llm",
+                "llm_model": openai_config.get('model', 'gpt-4o'),
+                "assigned_papers": clustering_result.get('assigned_papers', 0),
+                "unassigned_papers": clustering_result.get('unassigned_papers', 0)
+            }
+        )
+        
+    finally:
+        analyzer.close()
 
 @app.get("/api/clustering/status/{job_id}", response_model=JobStatus)
 async def get_job_status(job_id: str):

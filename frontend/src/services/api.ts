@@ -49,6 +49,10 @@ export interface ClusteringConfig {
   max_features?: number;
   max_k?: number;
   min_papers?: number;
+  clustering_method?: string;
+  llm_model?: string;
+  custom_model_name?: string;
+  max_papers_llm?: number;
 }
 
 export interface SavedClusteringResult {

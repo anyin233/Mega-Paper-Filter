@@ -19,11 +19,16 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  ToggleButton,
+  ToggleButtonGroup,
+  Collapse,
 } from '@mui/material';
 import { 
   PlayArrow as PlayIcon, 
   Stop as StopIcon,
   Visibility as ViewIcon,
+  Psychology as AIIcon,
+  BarChart as TraditionalIcon,
 } from '@mui/icons-material';
 import { api, Dataset, ClusteringConfig } from '../services/api';
 import { useJobStatus, useWebSocket } from '../hooks/useWebSocket';
@@ -43,11 +48,16 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     max_features: 1000,
     max_k: 15,
     min_papers: 5,
+    clustering_method: 'traditional',
+    llm_model: 'gpt-4o',
+    custom_model_name: '',
+    max_papers_llm: 100,
   });
   const [error, setError] = useState<string | null>(null);
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [resultsDialogOpen, setResultsDialogOpen] = useState(false);
   const [clusteringResults, setClusteringResults] = useState<any>(null);
+  const [openAIEnabled, setOpenAIEnabled] = useState(false);
 
   const { status: jobStatus, startPolling, stopPolling } = useJobStatus();
 
@@ -66,7 +76,17 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
 
   useEffect(() => {
     loadDatasets();
+    checkOpenAISettings();
   }, []);
+
+  const checkOpenAISettings = async () => {
+    try {
+      const settings = await api.getSettings();
+      setOpenAIEnabled(settings.openai.enabled);
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+    }
+  };
 
   useEffect(() => {
     // Stop polling and clear job when job is completed or failed
@@ -117,6 +137,15 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
   const startClustering = async () => {
     try {
       setError(null);
+      
+      // Validate custom model name if needed
+      if (config.clustering_method === 'llm' && config.llm_model === 'custom') {
+        if (!config.custom_model_name || !config.custom_model_name.trim()) {
+          setError('Custom model name is required when using custom model');
+          return;
+        }
+      }
+      
       const response = await api.runClustering(config);
       setCurrentJobId(response.job_id);
       startPolling(response.job_id);
@@ -170,6 +199,40 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
               Configuration
             </Typography>
 
+            {/* Clustering Method Selection */}
+            <FormControl fullWidth sx={{ mb: 3 }}>
+              <FormLabel sx={{ mb: 1 }}>Clustering Method</FormLabel>
+              <ToggleButtonGroup
+                value={config.clustering_method}
+                exclusive
+                onChange={(_, newMethod) => {
+                  if (newMethod !== null) {
+                    setConfig(prev => ({ ...prev, clustering_method: newMethod }));
+                  }
+                }}
+                aria-label="clustering method"
+                fullWidth
+              >
+                <ToggleButton value="traditional" aria-label="traditional clustering">
+                  <TraditionalIcon sx={{ mr: 1 }} />
+                  Traditional (TF-IDF + K-means)
+                </ToggleButton>
+                <ToggleButton 
+                  value="llm" 
+                  aria-label="llm clustering"
+                  disabled={!openAIEnabled}
+                >
+                  <AIIcon sx={{ mr: 1 }} />
+                  LLM Semantic
+                </ToggleButton>
+              </ToggleButtonGroup>
+              {!openAIEnabled && (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                  LLM clustering requires OpenAI configuration in settings
+                </Typography>
+              )}
+            </FormControl>
+
             <TextField
               select
               fullWidth
@@ -187,22 +250,81 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
               ))}
             </TextField>
 
-            <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
-              <FormLabel>Maximum Features: {config.max_features}</FormLabel>
-              <Slider
-                value={config.max_features || 1000}
-                onChange={handleSliderChange('max_features')}
-                min={100}
-                max={5000}
-                step={100}
-                marks={[
-                  { value: 500, label: '500' },
-                  { value: 1000, label: '1000' },
-                  { value: 2000, label: '2000' },
-                  { value: 5000, label: '5000' },
-                ]}
-              />
-            </FormControl>
+            {/* Traditional Clustering Options */}
+            <Collapse in={config.clustering_method === 'traditional'}>
+              <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
+                <FormLabel>Maximum Features: {config.max_features}</FormLabel>
+                <Slider
+                  value={config.max_features || 1000}
+                  onChange={handleSliderChange('max_features')}
+                  min={100}
+                  max={5000}
+                  step={100}
+                  marks={[
+                    { value: 500, label: '500' },
+                    { value: 1000, label: '1000' },
+                    { value: 2000, label: '2000' },
+                    { value: 5000, label: '5000' },
+                  ]}
+                />
+              </FormControl>
+            </Collapse>
+
+            {/* LLM Clustering Options */}
+            <Collapse in={config.clustering_method === 'llm'}>
+              <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
+                LLM clustering uses semantic understanding to group papers by research themes.
+                This method is more intelligent but limited to fewer papers due to API costs.
+              </Alert>
+
+              <TextField
+                select
+                fullWidth
+                label="LLM Model"
+                value={config.llm_model || 'gpt-4o'}
+                onChange={handleConfigChange('llm_model')}
+                margin="normal"
+                helperText="Choose the OpenAI model for clustering analysis"
+              >
+                <MenuItem value="gpt-4o">GPT-4o (Recommended)</MenuItem>
+                <MenuItem value="gpt-4o-mini">GPT-4o Mini (Faster, less accurate)</MenuItem>
+                <MenuItem value="gpt-4-turbo">GPT-4 Turbo</MenuItem>
+                <MenuItem value="gpt-3.5-turbo">GPT-3.5 Turbo (Cheapest)</MenuItem>
+                <MenuItem value="custom">Custom Model...</MenuItem>
+              </TextField>
+
+              {config.llm_model === 'custom' && (
+                <TextField
+                  fullWidth
+                  label="Custom Model Name"
+                  value={config.custom_model_name || ''}
+                  onChange={handleConfigChange('custom_model_name')}
+                  margin="normal"
+                  placeholder="e.g., gpt-4-1106-preview, claude-3-sonnet-20240229"
+                  helperText="Enter the exact model name as supported by your OpenAI-compatible API"
+                />
+              )}
+
+              <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
+                <FormLabel>Maximum Papers for LLM: {config.max_papers_llm}</FormLabel>
+                <Slider
+                  value={config.max_papers_llm || 100}
+                  onChange={handleSliderChange('max_papers_llm')}
+                  min={10}
+                  max={200}
+                  step={10}
+                  marks={[
+                    { value: 25, label: '25' },
+                    { value: 50, label: '50' },
+                    { value: 100, label: '100' },
+                    { value: 200, label: '200' },
+                  ]}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Higher values may increase costs and processing time
+                </Typography>
+              </FormControl>
+            </Collapse>
 
             <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
               <FormLabel>Maximum Clusters: {config.max_k}</FormLabel>
@@ -237,11 +359,15 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
               <Button
                 variant="contained"
                 onClick={startClustering}
-                disabled={isRunning}
+                disabled={
+                  isRunning || 
+                  (config.clustering_method === 'llm' && !openAIEnabled) ||
+                  (config.clustering_method === 'llm' && config.llm_model === 'custom' && (!config.custom_model_name || !config.custom_model_name.trim()))
+                }
                 startIcon={<PlayIcon />}
                 fullWidth
               >
-                {isRunning ? 'Running...' : 'Start Clustering'}
+                {isRunning ? 'Running...' : `Start ${config.clustering_method === 'llm' ? 'LLM' : 'Traditional'} Clustering`}
               </Button>
               
               {isRunning && (
@@ -320,7 +446,18 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                         <Typography variant="body2">
                           • Total papers: {jobStatus.result.total_papers}<br />
                           • Clusters found: {jobStatus.result.total_clusters}<br />
-                          • Silhouette score: {jobStatus.result.silhouette_score?.toFixed(3)}
+                          {jobStatus.result.clustering_method === 'traditional' && jobStatus.result.silhouette_score && (
+                            <>• Silhouette score: {jobStatus.result.silhouette_score?.toFixed(3)}<br /></>
+                          )}
+                          {jobStatus.result.clustering_method === 'llm' && (
+                            <>
+                              • LLM Model: {jobStatus.result.llm_model}<br />
+                              {jobStatus.result.unassigned_papers > 0 && (
+                                <>• Unassigned papers: {jobStatus.result.unassigned_papers}<br /></>
+                              )}
+                            </>
+                          )}
+                          • Method: {jobStatus.result.clustering_method === 'llm' ? 'LLM Semantic' : 'Traditional K-means'}
                         </Typography>
                         <Button
                           variant="outlined"

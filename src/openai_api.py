@@ -113,7 +113,36 @@ class ClusterNamingSchema(BaseModel):
     """
     name: str = Field(..., description="A concise descriptive name for the research cluster (2-4 words).")
     description: str = Field(..., description="A brief description explaining what the cluster represents.")
+    
+class PaperInfo(BaseModel):
+    """
+    A Pydantic model representing a paper's metadata.
+    """
+    title: str = Field(..., description="The title of the paper.")
+    abstract: str = Field(..., description="The abstract of the paper.")
+    
+class ClusterInfo(BaseModel):
+    """
+    A Pydantic model representing the information about a research cluster.
+    """
+    size: int = Field(..., description="The number of papers in the cluster.")
+    papers: list[PaperInfo] = Field(..., description="A list of papers in the cluster.")
+    name: str = Field(..., description="The name of the cluster.")
 
+class ClusteringRequest(BaseModel):
+    """
+    A Pydantic model representing a request for clustering analysis.
+    """
+    papers: list[PaperInfo] = Field(..., description="A list of papers to be clustered.")
+    max_num_clusters: int = Field(..., description="The number of clusters to create from the provided papers.")
+
+class ClusteringResponse(BaseModel):
+    """
+    A Pydantic model representing the response from a clustering analysis.
+    """
+    clusters: list[ClusterInfo] = Field(..., description="A list of clusters created from the provided papers.")
+
+    
 def get_openai_client(api_key: str, base_url: str = "https://api.openai.com/v1") -> OpenAI:
     """
     Initialize and return an OpenAI client with the provided API key.
@@ -248,5 +277,99 @@ Please provide a concise name (2-4 words) and description for this research clus
             {"role": "user", "content": prompt}
         ],
         response_format=ClusterNamingSchema,
+    )
+    return response.choices[0].message.content.strip()
+
+LLM_CLUSTERING_SYSTEM_PROMPT = """# Role: Academic Paper Clustering Specialist
+
+## Profile
+- language: English
+- description: A specialized AI expert in semantic clustering of academic papers based on research themes and methodologies
+- expertise: Academic research categorization, thematic analysis, semantic similarity, research domain understanding
+- goal: Group academic papers into coherent clusters based on their titles and abstracts, then provide meaningful names for each cluster
+
+## Task
+You will receive a collection of academic papers with their titles and abstracts. Your task is to:
+1. Analyze the semantic content and research themes of each paper
+2. Group papers into coherent clusters based on thematic similarity
+3. Assign each paper to exactly one cluster
+4. Provide a descriptive name for each cluster that captures the main research theme
+
+## Clustering Guidelines
+- Create clusters that are thematically coherent and meaningful
+- Consider research methodology, domain, and problem focus when grouping papers
+- Aim for balanced cluster sizes when possible, but prioritize thematic coherence
+- Each paper should belong to exactly one cluster
+- Cluster names should be concise (2-4 words) and descriptive
+- Avoid overly generic cluster names
+
+## Considerations
+- Papers from the same research domain may belong to different clusters if they address different problems or use different approaches
+- Papers from different domains may belong to the same cluster if they share similar methodologies or conceptual approaches
+- Consider both explicit keywords and implicit thematic connections
+- Balance specificity with broader applicability in cluster naming
+
+## Output Format
+Provide your response in JSON format matching the ClusteringResponse schema:
+- clusters: Array of cluster objects
+- Each cluster contains: name, size, and papers array
+- Papers in each cluster should include title and abstract
+
+## Quality Criteria
+- Clusters should be internally coherent (papers within a cluster are thematically similar)
+- Clusters should be externally distinct (clear differences between clusters)
+- Cluster names should be immediately understandable and descriptive
+- All input papers must be assigned to exactly one cluster
+"""
+
+async def get_llm_clustering(client: AsyncOpenAI, papers: list[dict], max_clusters: int, model: str = "gpt-4o") -> str:
+    """
+    Perform clustering of papers using LLM semantic analysis.
+    
+    :param client: An async OpenAI client instance.
+    :param papers: List of paper dictionaries with 'title' and 'abstract' fields.
+    :param max_clusters: Maximum number of clusters to create.
+    :param model: The model to use for clustering (recommend gpt-4o for better reasoning).
+    :return: JSON string with clustering results.
+    """
+    # Prepare papers for the clustering request
+    paper_infos = []
+    for i, paper in enumerate(papers):
+        paper_infos.append({
+            "title": paper.get("title", f"Paper {i+1}"),
+            "abstract": paper.get("abstract", "")
+        })
+    
+    # Create the clustering request
+    clustering_request = {
+        "papers": paper_infos,
+        "max_num_clusters": max_clusters
+    }
+    
+    # Create the prompt
+    prompt = f"""Please cluster the following {len(papers)} academic papers into meaningful thematic groups.
+
+Target number of clusters: {max_clusters} (you may create fewer if the papers naturally group into fewer coherent themes)
+
+Papers to cluster:
+"""
+    
+    for i, paper in enumerate(paper_infos, 1):
+        prompt += f"\n{i}. Title: {paper['title']}\n"
+        if paper['abstract']:
+            # Truncate abstract if too long to stay within token limits
+            abstract = paper['abstract'][:500] + "..." if len(paper['abstract']) > 500 else paper['abstract']
+            prompt += f"   Abstract: {abstract}\n"
+    
+    prompt += f"""
+Please analyze these papers and group them into {max_clusters} or fewer coherent clusters based on their research themes, methodologies, and content. Provide descriptive names for each cluster and ensure every paper is assigned to exactly one cluster."""
+
+    response = await client.chat.completions.parse(
+        model=model,
+        messages=[
+            {"role": "system", "content": LLM_CLUSTERING_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        response_format=ClusteringResponse,
     )
     return response.choices[0].message.content.strip()
