@@ -29,6 +29,7 @@ import {
   Visibility as ViewIcon,
   Psychology as AIIcon,
   BarChart as TraditionalIcon,
+  Hub as EmbeddingIcon,
 } from '@mui/icons-material';
 import { api, Dataset, ClusteringConfig } from '../services/api';
 import { useJobStatus, useWebSocket } from '../hooks/useWebSocket';
@@ -52,12 +53,21 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     llm_model: 'gpt-4o',
     custom_model_name: '',
     max_papers_llm: 100,
+    // Embedding parameters
+    embedding_model: 'text-embedding-ada-002',
+    embedding_batch_size: 50,
+    embedding_clustering_algorithm: 'kmeans',
+    dbscan_eps: 0.5,
+    dbscan_min_samples: 5,
+    agglomerative_linkage: 'ward',
   });
   const [error, setError] = useState<string | null>(null);
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [resultsDialogOpen, setResultsDialogOpen] = useState(false);
   const [clusteringResults, setClusteringResults] = useState<any>(null);
   const [openAIEnabled, setOpenAIEnabled] = useState(false);
+  const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
+  const [restoredJob, setRestoredJob] = useState(false); // Track if we restored a previous job
 
   const { status: jobStatus, startPolling, stopPolling } = useJobStatus();
 
@@ -77,12 +87,59 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
   useEffect(() => {
     loadDatasets();
     checkOpenAISettings();
+    checkForActiveJobs(); // Check for any active jobs when component mounts
   }, []);
+
+  const checkForActiveJobs = async () => {
+    try {
+      // First, check localStorage for any previously tracked job
+      const savedJobId = localStorage.getItem('currentClusteringJobId');
+      if (savedJobId) {
+        try {
+          const savedJobStatus = await api.getJobStatus(savedJobId);
+          if (savedJobStatus.status === 'running' || savedJobStatus.status === 'pending') {
+            console.log('Restoring saved clustering job:', savedJobId);
+            setCurrentJobId(savedJobId);
+            startPolling(savedJobId);
+            setRestoredJob(true); // Mark as restored
+            return; // Found saved job, no need to check for others
+          } else if (savedJobStatus.status === 'completed' || savedJobStatus.status === 'failed') {
+            // Clean up completed/failed job from localStorage
+            localStorage.removeItem('currentClusteringJobId');
+          }
+        } catch (error: any) {
+          // Job no longer exists or was cleaned up, clean up localStorage
+          localStorage.removeItem('currentClusteringJobId');
+          console.log('Saved job no longer exists or was cleaned up:', savedJobId);
+        }
+      }
+
+      // If no saved job or saved job is no longer active, check for any active jobs
+      const activeJobsData = await api.getActiveJobs();
+      
+      // Find the most recent active job
+      const activeJob = activeJobsData.jobs.find(job => 
+        job.status === 'running' || job.status === 'pending'
+      );
+      
+      if (activeJob) {
+        console.log('Found active clustering job:', activeJob.job_id);
+        setCurrentJobId(activeJob.job_id);
+        startPolling(activeJob.job_id);
+        setRestoredJob(true); // Mark as restored
+        // Save to localStorage for future restoration
+        localStorage.setItem('currentClusteringJobId', activeJob.job_id);
+      }
+    } catch (error) {
+      console.error('Failed to check for active jobs:', error);
+    }
+  };
 
   const checkOpenAISettings = async () => {
     try {
       const settings = await api.getSettings();
       setOpenAIEnabled(settings.openai.enabled);
+      setEmbeddingEnabled(settings.embedding?.enabled || settings.openai.enabled); // Fallback to OpenAI if embedding not configured
     } catch (error) {
       console.error('Failed to load settings:', error);
     }
@@ -91,6 +148,9 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
   useEffect(() => {
     // Stop polling and clear job when job is completed or failed
     if (jobStatus && (jobStatus.status === 'completed' || jobStatus.status === 'failed')) {
+      // Clean up localStorage when job completes or fails
+      localStorage.removeItem('currentClusteringJobId');
+      
       if (jobStatus.status === 'completed' && jobStatus.result) {
         setClusteringResults(jobStatus.result);
         // Notify parent component of successful completion
@@ -149,6 +209,9 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
       const response = await api.runClustering(config);
       setCurrentJobId(response.job_id);
       startPolling(response.job_id);
+      
+      // Save job ID to localStorage for persistence
+      localStorage.setItem('currentClusteringJobId', response.job_id);
     } catch (err: any) {
       setError(err.message || 'Failed to start clustering');
     }
@@ -157,6 +220,8 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
   const stopClustering = () => {
     stopPolling();
     setCurrentJobId(null);
+    // Clean up localStorage when manually stopping
+    localStorage.removeItem('currentClusteringJobId');
   };
 
   const viewResults = async () => {
@@ -181,14 +246,26 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
         Clustering Analysis
       </Typography>
 
-      {/* WebSocket Status */}
+      {/* WebSocket Status and Restored Job Notice */}
       {currentJobId && (
-        <Alert 
-          severity={isConnected ? 'success' : 'warning'} 
-          sx={{ mb: 3 }}
-        >
-          Real-time updates: {isConnected ? 'Connected' : 'Disconnected'}
-        </Alert>
+        <>
+          <Alert 
+            severity={isConnected ? 'success' : 'warning'} 
+            sx={{ mb: 2 }}
+          >
+            Real-time updates: {isConnected ? 'Connected' : 'Disconnected'}
+          </Alert>
+          
+          {restoredJob && (
+            <Alert 
+              severity="info" 
+              sx={{ mb: 3 }}
+              onClose={() => setRestoredJob(false)}
+            >
+              Restored in-progress clustering job. Progress tracking will continue from where you left off.
+            </Alert>
+          )}
+        </>
       )}
 
       <Grid container spacing={3}>
@@ -225,10 +302,23 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                   <AIIcon sx={{ mr: 1 }} />
                   LLM Semantic
                 </ToggleButton>
+                <ToggleButton 
+                  value="embedding" 
+                  aria-label="embedding clustering"
+                  disabled={!embeddingEnabled}
+                >
+                  <EmbeddingIcon sx={{ mr: 1 }} />
+                  Embedding-based
+                </ToggleButton>
               </ToggleButtonGroup>
               {!openAIEnabled && (
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
                   LLM clustering requires OpenAI configuration in settings
+                </Typography>
+              )}
+              {!embeddingEnabled && (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                  Embedding clustering requires embedding model or OpenAI configuration in settings
                 </Typography>
               )}
             </FormControl>
@@ -326,6 +416,106 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
               </FormControl>
             </Collapse>
 
+            {/* Embedding Clustering Options */}
+            <Collapse in={config.clustering_method === 'embedding'}>
+              <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
+                Embedding clustering uses semantic embeddings from language models combined with traditional clustering algorithms.
+                This method provides high-quality semantic clustering with better scalability than pure LLM clustering.
+              </Alert>
+
+              <TextField
+                select
+                fullWidth
+                label="Embedding Model"
+                value={config.embedding_model || 'text-embedding-ada-002'}
+                onChange={handleConfigChange('embedding_model')}
+                margin="normal"
+                helperText="Choose the embedding model for generating text representations"
+              >
+                <MenuItem value="text-embedding-ada-002">text-embedding-ada-002 (OpenAI)</MenuItem>
+                <MenuItem value="text-embedding-3-small">text-embedding-3-small (OpenAI)</MenuItem>
+                <MenuItem value="text-embedding-3-large">text-embedding-3-large (OpenAI)</MenuItem>
+              </TextField>
+
+              <TextField
+                select
+                fullWidth
+                label="Clustering Algorithm"
+                value={config.embedding_clustering_algorithm || 'kmeans'}
+                onChange={handleConfigChange('embedding_clustering_algorithm')}
+                margin="normal"
+                helperText="Choose the clustering algorithm to apply to embeddings"
+              >
+                <MenuItem value="kmeans">K-means (Recommended)</MenuItem>
+                <MenuItem value="dbscan">DBSCAN (Density-based)</MenuItem>
+                <MenuItem value="agglomerative">Agglomerative (Hierarchical)</MenuItem>
+              </TextField>
+
+              <FormControl fullWidth sx={{ mt: 2 }}>
+                <FormLabel>Embedding Batch Size: {config.embedding_batch_size}</FormLabel>
+                <Slider
+                  value={config.embedding_batch_size || 50}
+                  onChange={handleSliderChange('embedding_batch_size')}
+                  min={10}
+                  max={200}
+                  step={10}
+                  marks={[
+                    { value: 10, label: '10' },
+                    { value: 50, label: '50' },
+                    { value: 100, label: '100' },
+                    { value: 200, label: '200' },
+                  ]}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Number of texts to process in each API call
+                </Typography>
+              </FormControl>
+
+              {/* DBSCAN-specific parameters */}
+              <Collapse in={config.embedding_clustering_algorithm === 'dbscan'}>
+                <Box sx={{ mt: 2 }}>
+                  <TextField
+                    type="number"
+                    label="DBSCAN Epsilon"
+                    value={config.dbscan_eps || 0.5}
+                    onChange={handleConfigChange('dbscan_eps')}
+                    margin="normal"
+                    inputProps={{ step: 0.1, min: 0.1, max: 2.0 }}
+                    helperText="Maximum distance between two samples to be considered as in the same neighborhood"
+                    sx={{ mr: 2, width: '48%' }}
+                  />
+                  <TextField
+                    type="number"
+                    label="Min Samples"
+                    value={config.dbscan_min_samples || 5}
+                    onChange={handleConfigChange('dbscan_min_samples')}
+                    margin="normal"
+                    inputProps={{ step: 1, min: 2, max: 20 }}
+                    helperText="Minimum number of samples in a neighborhood for a point to be considered as a core point"
+                    sx={{ width: '48%' }}
+                  />
+                </Box>
+              </Collapse>
+
+              {/* Agglomerative-specific parameters */}
+              <Collapse in={config.embedding_clustering_algorithm === 'agglomerative'}>
+                <TextField
+                  select
+                  fullWidth
+                  label="Linkage Method"
+                  value={config.agglomerative_linkage || 'ward'}
+                  onChange={handleConfigChange('agglomerative_linkage')}
+                  margin="normal"
+                  helperText="Linkage criterion for agglomerative clustering"
+                >
+                  <MenuItem value="ward">Ward (Recommended)</MenuItem>
+                  <MenuItem value="complete">Complete</MenuItem>
+                  <MenuItem value="average">Average</MenuItem>
+                  <MenuItem value="single">Single</MenuItem>
+                </TextField>
+              </Collapse>
+            </Collapse>
+
             <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
               <FormLabel>Maximum Clusters: {config.max_k}</FormLabel>
               <Slider
@@ -362,12 +552,17 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                 disabled={
                   isRunning || 
                   (config.clustering_method === 'llm' && !openAIEnabled) ||
-                  (config.clustering_method === 'llm' && config.llm_model === 'custom' && (!config.custom_model_name || !config.custom_model_name.trim()))
+                  (config.clustering_method === 'llm' && config.llm_model === 'custom' && (!config.custom_model_name || !config.custom_model_name.trim())) ||
+                  (config.clustering_method === 'embedding' && !embeddingEnabled)
                 }
                 startIcon={<PlayIcon />}
                 fullWidth
               >
-                {isRunning ? 'Running...' : `Start ${config.clustering_method === 'llm' ? 'LLM' : 'Traditional'} Clustering`}
+                {isRunning ? 'Running...' : `Start ${
+                  config.clustering_method === 'llm' ? 'LLM' : 
+                  config.clustering_method === 'embedding' ? 'Embedding' : 
+                  'Traditional'
+                } Clustering`}
               </Button>
               
               {isRunning && (

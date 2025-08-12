@@ -18,6 +18,7 @@ scholar_config.txt
 *.json
 *.png
 *.csv
+*.pkl
 
 papers_with_abstracts.txt
 

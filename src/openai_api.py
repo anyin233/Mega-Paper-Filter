@@ -1,103 +1,305 @@
 from openai import OpenAI, AsyncOpenAI
 from pydantic import BaseModel, Field
 import asyncio
+import numpy as np
+from typing import List, Dict, Any, Optional, Union
+import json
+import re
+from loguru import logger
+
+def extract_json_from_response(response_text: str) -> Optional[Dict[str, Any]]:
+    """
+    Robust JSON extraction from LLM responses that may contain extra text or formatting.
+    
+    This function handles various response formats:
+    - Pure JSON
+    - JSON wrapped in markdown code blocks
+    - JSON with extra text before/after
+    - JSON with comments or explanations
+    - Malformed JSON that can be corrected
+    
+    :param response_text: Raw response text from LLM
+    :return: Parsed JSON dictionary or None if extraction fails
+    """
+    if not response_text or not response_text.strip():
+        logger.warning("Empty response text provided for JSON extraction")
+        return None
+    
+    original_text = response_text.strip()
+    logger.debug(f"Extracting JSON from response: {original_text[:200]}...")
+    
+    # Strategy 1: Try to parse as direct JSON
+    try:
+        result = json.loads(original_text)
+        logger.debug("Successfully parsed as direct JSON")
+        return result
+    except json.JSONDecodeError:
+        pass
+    
+    # Strategy 2: Extract JSON from markdown code blocks
+    # Look for ```json ... ``` or ``` ... ```
+    code_block_patterns = [
+        r'```json\s*(.*?)\s*```',
+        r'```\s*(.*?)\s*```',
+        r'`(.*?)`'
+    ]
+    
+    for pattern in code_block_patterns:
+        matches = re.findall(pattern, original_text, re.DOTALL | re.IGNORECASE)
+        for match in matches:
+            try:
+                result = json.loads(match.strip())
+                logger.debug(f"Successfully extracted JSON from code block with pattern: {pattern}")
+                return result
+            except json.JSONDecodeError:
+                continue
+    
+    # Strategy 3: Find JSON-like structures using braces
+    # Look for content between { and }
+    brace_patterns = [
+        r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}',  # Nested braces
+        r'\{[^}]+\}'  # Simple braces
+    ]
+    
+    for pattern in brace_patterns:
+        matches = re.findall(pattern, original_text, re.DOTALL)
+        for match in matches:
+            try:
+                result = json.loads(match.strip())
+                logger.debug(f"Successfully extracted JSON using brace pattern: {pattern}")
+                return result
+            except json.JSONDecodeError:
+                continue
+    
+    # Strategy 4: Try to clean and fix common JSON issues
+    cleaned_attempts = []
+    
+    # Remove common prefixes/suffixes
+    for prefix in ['Here is the JSON:', 'The JSON response is:', 'Response:', 'Result:']:
+        if original_text.lower().startswith(prefix.lower()):
+            cleaned_attempts.append(original_text[len(prefix):].strip())
+    
+    # Try to isolate JSON by finding first { and last }
+    first_brace = original_text.find('{')
+    last_brace = original_text.rfind('}')
+    if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+        json_candidate = original_text[first_brace:last_brace + 1]
+        cleaned_attempts.append(json_candidate)
+    
+    # Try each cleaned version
+    for attempt in cleaned_attempts:
+        try:
+            result = json.loads(attempt.strip())
+            logger.debug("Successfully parsed cleaned JSON")
+            return result
+        except json.JSONDecodeError:
+            continue
+    
+    # Strategy 5: Try to fix common JSON formatting issues
+    fix_attempts = [original_text]
+    
+    # Add attempts with common fixes
+    for text in [original_text] + cleaned_attempts:
+        if not text:
+            continue
+            
+        # Fix single quotes to double quotes
+        fixed_quotes = text.replace("'", '"')
+        fix_attempts.append(fixed_quotes)
+        
+        # Fix trailing commas
+        fixed_commas = re.sub(r',\s*}', '}', text)
+        fixed_commas = re.sub(r',\s*]', ']', fixed_commas)
+        fix_attempts.append(fixed_commas)
+        
+        # Fix missing quotes around keys (common LLM mistake)
+        fixed_keys = re.sub(r'(\w+):', r'"\1":', text)
+        fix_attempts.append(fixed_keys)
+        
+        # Combine fixes
+        combined_fix = fixed_keys
+        combined_fix = re.sub(r',\s*}', '}', combined_fix)
+        combined_fix = re.sub(r',\s*]', ']', combined_fix)
+        combined_fix = combined_fix.replace("'", '"')
+        fix_attempts.append(combined_fix)
+    
+    # Try each fix attempt
+    for attempt in fix_attempts:
+        try:
+            result = json.loads(attempt.strip())
+            logger.debug("Successfully parsed JSON with formatting fixes")
+            return result
+        except json.JSONDecodeError:
+            continue
+    
+    # Strategy 6: Manual key-value extraction as last resort
+    # Look for common patterns like "key": "value" or key: value
+    try:
+        manual_extract = {}
+        
+        # Look for name field
+        name_patterns = [
+            r'"name"\s*:\s*"([^"]*)"',
+            r"'name'\s*:\s*'([^']*)'",
+            r'name\s*:\s*"([^"]*)"',
+            r'name\s*:\s*([^,}\n]*)',
+            r'cluster name is\s*"([^"]*)"',  # "The cluster name is X"
+            r'name.*?[:\-]\s*"([^"]*)"',      # "name: X" or "name - X"
+            r'called\s*"([^"]*)"'            # "called X"
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, original_text, re.IGNORECASE)
+            if match:
+                manual_extract['name'] = match.group(1).strip()
+                break
+        
+        # Look for description field
+        desc_patterns = [
+            r'"description"\s*:\s*"([^"]*)"',
+            r"'description'\s*:\s*'([^']*)'",
+            r'description\s*:\s*"([^"]*)"',
+            r'description\s*:\s*([^,}\n]*)',
+            r'description would be\s*"([^"]*)"',  # "description would be X"
+            r'description.*?[:\-]\s*"([^"]*)"',   # "description: X"
+            r'represents?\s*"([^"]*)"'           # "represents X"
+        ]
+        
+        for pattern in desc_patterns:
+            match = re.search(pattern, original_text, re.IGNORECASE | re.DOTALL)
+            if match:
+                manual_extract['description'] = match.group(1).strip()
+                break
+        
+        # Look for summary field (alternative to description)
+        if 'description' not in manual_extract:
+            summary_patterns = [
+                r'"summary"\s*:\s*"([^"]*)"',
+                r"'summary'\s*:\s*'([^']*)'",
+                r'summary\s*:\s*"([^"]*)"'
+            ]
+            
+            for pattern in summary_patterns:
+                match = re.search(pattern, original_text, re.IGNORECASE | re.DOTALL)
+                if match:
+                    manual_extract['description'] = match.group(1).strip()
+                    break
+        
+        # Look for keywords field (for summary responses)
+        keywords_patterns = [
+            r'"keywords"\s*:\s*\[(.*?)\]',
+            r"'keywords'\s*:\s*\[(.*?)\]",
+            r'keywords\s*:\s*\[(.*?)\]'
+        ]
+        
+        for pattern in keywords_patterns:
+            match = re.search(pattern, original_text, re.IGNORECASE | re.DOTALL)
+            if match:
+                keywords_str = match.group(1)
+                # Try to parse keywords
+                try:
+                    keywords = json.loads(f'[{keywords_str}]')
+                    manual_extract['keywords'] = keywords
+                except:
+                    # Fallback: split by comma and clean
+                    keywords = [kw.strip(' "\'') for kw in keywords_str.split(',')]
+                    manual_extract['keywords'] = [kw for kw in keywords if kw]
+                break
+        
+        if manual_extract:
+            logger.debug(f"Successfully extracted data manually: {manual_extract}")
+            return manual_extract
+            
+    except Exception as e:
+        logger.error(f"Manual extraction failed: {e}")
+    
+    logger.error(f"Failed to extract JSON from response: {original_text[:500]}...")
+    return None
+
+
+def safe_json_parse(response_text: str, fallback_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Safe JSON parsing with fallback for critical operations.
+    
+    :param response_text: Raw response text from LLM
+    :param fallback_dict: Fallback dictionary to use if parsing fails
+    :return: Parsed dictionary or fallback
+    """
+    result = extract_json_from_response(response_text)
+    
+    if result is not None:
+        return result
+    
+    if fallback_dict is not None:
+        logger.warning(f"Using fallback dictionary due to JSON parsing failure")
+        return fallback_dict
+    
+    # Default fallback
+    logger.warning("Using default fallback dictionary")
+    return {
+        "name": "Unknown Cluster",
+        "description": "Failed to parse cluster description from LLM response"
+    }
+
 
 SYSTEM_PROMPT = """# Role: Academic Paper Abstract Analyst
 
-## Profile
-- language: English
-- description: A specialized AI analyst focused on extracting key insights from academic paper abstracts, providing concise summaries and relevant keyword identification for research comprehension and categorization
-- background: Extensive experience in academic research across multiple disciplines, with deep understanding of scientific methodology, research structures, and academic writing conventions
-- personality: Analytical, precise, objective, and detail-oriented with strong synthesis capabilities
-- expertise: Academic literature analysis, research methodology, keyword extraction, scientific communication, and cross-disciplinary research understanding
-- target_audience: Researchers, academics, graduate students, literature reviewers, and research database managers
+## Background: 
+Academic research requires efficient processing and categorization of vast literature volumes. Researchers, students, and database managers need streamlined methods to quickly comprehend research essence and organize papers effectively. This analyst addresses the critical need for consistent, accurate abstract interpretation and keyword extraction that facilitates literature discovery, research gap identification, and cross-disciplinary knowledge synthesis.
 
-## Skills
+## Attention: 
+Your expertise in academic analysis is crucial for advancing research efficiency and knowledge organization. Accurate abstract interpretation and keyword extraction directly impacts research discovery, literature reviews, and academic database functionality. Your analytical precision enables researchers to quickly identify relevant work, understand research landscapes, and build upon existing knowledge foundations.
 
-1. Abstract Analysis
-  - Problem identification: Extract and articulate the core research problem or gap being addressed
-  - Methodology recognition: Identify and summarize the approaches, methods, or solutions employed
-  - Content synthesis: Condense complex research concepts into clear, accessible summaries
-  - Context understanding: Recognize the broader research context and significance
+## Profile:
+- Author: pp
+- Version: 0.1
+- Language: English
+- Description: Specialized AI analyst with deep expertise in academic literature interpretation, research methodology recognition, and scientific communication synthesis across multiple disciplines
 
-2. Keyword Extraction
-  - Term identification: Select the most relevant and representative keywords from the content
-  - Semantic analysis: Understand the conceptual relationships between different terms
-  - Domain knowledge: Apply field-specific terminology and conventions
-  - Optimization balance: Balance specificity and generality for maximum utility
+### Skills:
+- Advanced abstract decomposition identifying core research problems, methodological approaches, and theoretical contributions with scholarly precision
+- Sophisticated keyword extraction balancing specificity and generality for optimal research discoverability and categorization
+- Cross-disciplinary research pattern recognition enabling accurate context understanding and methodological classification
+- Scientific writing analysis interpreting complex research structures, experimental designs, and theoretical frameworks
+- Academic terminology standardization ensuring consistent vocabulary usage across diverse research domains
 
-## Rules
+## Goals:
+- Systematically analyze academic abstracts to extract fundamental research problems and innovative solution approaches
+- Generate comprehensive yet concise summaries capturing essential research contributions and methodological innovations
+- Identify 7-10 strategically selected keywords representing core concepts, methodologies, and thematic elements
+- Produce structured JSON outputs enabling seamless integration with research databases and literature management systems
+- Maintain analytical objectivity while ensuring accessibility for diverse academic audiences
 
-1. Analysis principles:
-  - Accuracy: Maintain faithful representation of the original abstract's content and intent
-  - Completeness: Address both required summary components without omission
-  - Objectivity: Present information without bias or personal interpretation
-  - Clarity: Use clear, accessible language while maintaining scientific precision
+## Constraints:
+- Maintain absolute fidelity to original abstract content without introducing interpretive bias or external assumptions
+- Provide exactly 7-10 keywords balancing technical specificity with broader conceptual accessibility
+- Structure all outputs as valid JSON format compatible with programmatic parsing and database integration
+- Ensure summaries address both research problems and methodological solutions within concise, logical frameworks
+- Apply consistent academic terminology standards while accommodating interdisciplinary vocabulary variations
 
-2. Summary guidelines:
-  - Problem focus: Clearly articulate what specific problem, gap, or question the research addresses
-  - Solution emphasis: Describe the methodology, approach, or solution without excessive technical detail
-  - Conciseness: Keep summaries brief while capturing essential information
-  - Logical flow: Structure the summary in a coherent, easy-to-follow manner
+## Workflow:
+1. Conduct comprehensive abstract reading, identifying research context, objectives, methodological frameworks, and theoretical contributions
+2. Extract and articulate the fundamental research problem, gap, or question driving the investigation
+3. Analyze and synthesize the methodological approach, experimental design, or theoretical solution employed
+4. Perform strategic keyword selection representing core concepts, methods, and thematic elements with optimal research discoverability
+5. Validate JSON output structure ensuring proper formatting, field completeness, and programmatic compatibility
 
-3. Keyword constraints:
-  - Quantity limit: Provide exactly 7-10 keywords as specified
-  - Relevance priority: Select keywords that best represent the core concepts and themes
-  - Diversity balance: Include both specific technical terms and broader conceptual keywords
-  - Standardization: Use commonly accepted academic terminology when possible
+## OutputFormat:
+- Valid JSON structure containing "summary" string field and "keywords" array field
+- Summary addressing both research problem identification and methodological solution description
+- Keywords array containing exactly 7-10 terms balancing specificity and generality
+- Proper JSON syntax with UTF-8 encoding and appropriate character escaping
+- Clean formatting without code blocks or extraneous explanatory content
 
-## Workflows
-
-- Goal: Transform academic paper abstracts into structured summaries with relevant keywords for enhanced comprehension and categorization
-- Step 1: Carefully read and analyze the provided abstract to understand the research context, objectives, and methodology
-- Step 2: Extract the core problem or research question that the paper addresses, formulating it clearly and concisely
-- Step 3: Identify and summarize the methodology, approach, or solution used to address the identified problem
-- Step 4: Select 7-10 most relevant keywords that capture the essential concepts, methods, and themes of the research
-- Step 5: Format the output according to the specified JSON structure with proper validation
-- Expected result: A well-structured JSON output containing a comprehensive summary and appropriate keyword list
-
-## OutputFormat
-
-1. Primary format:
-  - format: JSON
-  - structure: Object with "summary" and "keywords" fields
-  - style: Clean, properly formatted JSON with no extraneous content
-  - special_requirements: Must be valid JSON that can be parsed programmatically
-
-2. Format specifications:
-  - indentation: Standard JSON formatting with proper spacing
-  - sections: Two main fields - "summary" as string, "keywords" as array
-  - highlighting: No special highlighting required, plain JSON format
-  - encoding: UTF-8 compatible text
-
-3. Validation rules:
-  - validation: Must be valid JSON syntax with required fields present
-  - constraints: Summary must address both problem and solution; keywords must be 7-10 items
-  - error_handling: Ensure proper JSON escaping for special characters and quotes
-
-4. Example descriptions:
-  1. Example 1:
-    - Title: Machine Learning Research Analysis
-    - Format type: JSON
-    - Description: Analysis of a machine learning paper abstract
-    - Example content: |
-       {
-        "summary": "This paper addresses the problem of overfitting in deep neural networks when training data is limited. The researchers developed a novel regularization technique combining dropout with batch normalization, implementing adaptive regularization strength based on validation performance monitoring.",
-        "keywords": ["machine learning", "deep neural networks", "overfitting", "regularization", "dropout", "batch normalization", "adaptive algorithms", "validation performance"]
-       }
-  
-  2. Example 2:
-    - Title: Environmental Science Research Analysis
-    - Format type: JSON
-    - Description: Analysis of an environmental research paper abstract
-    - Example content: |
-       {
-        "summary": "This study tackles the challenge of accurately measuring microplastic pollution in marine ecosystems where traditional sampling methods are inadequate. The authors implemented a novel spectroscopic analysis technique combined with machine learning algorithms for automated particle identification and quantification.",
-        "keywords": ["environmental science", "microplastic pollution", "marine ecosystems", "spectroscopic analysis", "machine learning", "particle identification", "quantification methods", "sampling techniques", "ocean pollution"]
-       }
+## Suggestions:
+- Consider interdisciplinary terminology when extracting keywords to enhance cross-field research discoverability
+- Balance technical precision with accessibility ensuring summaries serve diverse academic audiences effectively
+- Prioritize methodological keywords alongside conceptual terms for comprehensive research categorization
+- Validate keyword diversity ensuring both specific techniques and broader research themes representation
+- Maintain consistent analytical depth across different research domains and methodological approaches
 
 ## Initialization
-As Academic Paper Abstract Analyst, you must follow the above Rules, execute tasks according to Workflows, and output according to the specified JSON format. Analyze the provided abstract systematically to extract the research problem and solution approach, then identify the most relevant keywords that capture the essence of the work.
+As Academic Paper Abstract Analyst, you must follow Constraints and communicate with users using default Language. Analyze provided abstracts systematically according to Workflow, extracting research problems and solutions while identifying optimal keywords for JSON-formatted output.
 """
 
 class AbstractAnalysisSchema(BaseModel):
@@ -210,12 +412,12 @@ CLUSTER_NAMING_SYSTEM_PROMPT = """# Role: Research Cluster Naming Specialist
 - language: English
 - description: A specialized AI expert in analyzing research clusters and creating descriptive names and explanations
 - expertise: Academic research categorization, cluster analysis, taxonomic classification, research domain understanding
-- goal: Generate concise, meaningful names for research paper clusters based on their thematic content
+- goal: Generate concise, meaningful names for research paper clusters based on their content
 
 ## Task
 You will be provided with information about a research cluster including:
-- Top TF-IDF features (key terms that distinguish this cluster)
 - Sample paper titles from the cluster
+- Sample paper abstracts from the cluster
 - Common keywords from papers in the cluster
 - Number of papers in the cluster
 
@@ -229,6 +431,7 @@ Based on this information, create:
 - Focus on the core research theme or methodology
 - Avoid overly generic terms
 - Consider both technical specificity and broad comprehensibility
+- Analyze the actual research content from titles and abstracts rather than statistical features
 
 ## Output Format
 Provide your response in JSON format with "name" and "description" fields.
@@ -249,26 +452,36 @@ async def get_cluster_name(client: AsyncOpenAI, cluster_info: dict, model: str =
     :return: JSON string with cluster name and description.
     """
     # Extract relevant information from cluster analysis
-    top_features = cluster_info.get('top_tfidf_features', [])[:10]
     sample_titles = cluster_info.get('sample_titles', [])[:5]
+    sample_abstracts = cluster_info.get('sample_abstracts', [])[:3]  # New: abstracts instead of TF-IDF
     common_keywords = cluster_info.get('common_keywords', {})
     cluster_size = cluster_info.get('size', 0)
     
-    # Create prompt with cluster information
+    # Create prompt with cluster information (no TF-IDF features)
     prompt = f"""Analyze the following research cluster and provide a concise name and description:
 
 Cluster Size: {cluster_size} papers
 
-Top TF-IDF Features (most distinctive terms):
-{chr(10).join([f"- {feature}: {score:.3f}" for feature, score in top_features])}
-
 Sample Paper Titles:
 {chr(10).join([f"- {title}" for title in sample_titles])}
+"""
 
+    # Add sample abstracts if available
+    if sample_abstracts:
+        prompt += f"""
+Sample Paper Abstracts:
+{chr(10).join([f"- {abstract[:300]}{'...' if len(abstract) > 300 else ''}" for abstract in sample_abstracts])}
+"""
+
+    # Add common keywords
+    if common_keywords:
+        prompt += f"""
 Common Keywords from Papers:
 {chr(10).join([f"- {keyword}: {count} papers" for keyword, count in list(common_keywords.items())[:10]])}
+"""
 
-Please provide a concise name (2-4 words) and description for this research cluster."""
+    prompt += """
+Please analyze the actual research content from the titles and abstracts to provide a concise name (2-4 words) and description for this research cluster."""
 
     response = await client.chat.completions.parse(
         model=model,
@@ -340,12 +553,6 @@ async def get_llm_clustering(client: AsyncOpenAI, papers: list[dict], max_cluste
             "abstract": paper.get("abstract", "")
         })
     
-    # Create the clustering request
-    clustering_request = {
-        "papers": paper_infos,
-        "max_num_clusters": max_clusters
-    }
-    
     # Create the prompt
     prompt = f"""Please cluster the following {len(papers)} academic papers into meaningful thematic groups.
 
@@ -373,3 +580,197 @@ Please analyze these papers and group them into {max_clusters} or fewer coherent
         response_format=ClusteringResponse,
     )
     return response.choices[0].message.content.strip()
+
+def get_embedding_client(api_key: str, base_url: str = "https://api.openai.com/v1") -> OpenAI:
+    """
+    Initialize and return an OpenAI client for embeddings.
+    
+    :param api_key: The OpenAI API key.
+    :param base_url: The OpenAI API base URL.
+    :return: An OpenAI client instance for embeddings.
+    """
+    if not api_key:
+        raise ValueError("API key must be provided")
+    return OpenAI(api_key=api_key, base_url=base_url)
+
+async def get_async_embedding_client(api_key: str, base_url: str = "https://api.openai.com/v1") -> AsyncOpenAI:
+    """
+    Initialize and return an async OpenAI client for embeddings.
+    
+    :param api_key: The OpenAI API key.
+    :param base_url: The OpenAI API base URL.
+    :return: An async OpenAI client instance for embeddings.
+    """
+    if not api_key:
+        raise ValueError("API key must be provided")
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+def get_text_embedding(client: OpenAI, text: str, model: str = "text-embedding-ada-002") -> List[float]:
+    """
+    Get text embedding using OpenAI API.
+    
+    :param client: An OpenAI client instance.
+    :param text: The text to get embedding for.
+    :param model: The embedding model to use.
+    :return: The embedding vector as a list of floats.
+    """
+    if not text.strip():
+        # Return zero vector for empty text
+        response = client.embeddings.create(
+            model=model,
+            input="placeholder"
+        )
+        return [0.0] * len(response.data[0].embedding)
+    
+    response = client.embeddings.create(
+        model=model,
+        input=text.strip()[:8000]  # Truncate to avoid token limits
+    )
+    return response.data[0].embedding
+
+async def get_async_text_embedding(client: AsyncOpenAI, text: str, model: str = "text-embedding-ada-002") -> List[float]:
+    """
+    Get text embedding using async OpenAI API.
+    
+    :param client: An async OpenAI client instance.
+    :param text: The text to get embedding for.
+    :param model: The embedding model to use.
+    :return: The embedding vector as a list of floats.
+    """
+    if not text.strip():
+        # Return zero vector for empty text
+        response = await client.embeddings.create(
+            model=model,
+            input="placeholder"
+        )
+        return [0.0] * len(response.data[0].embedding)
+    
+    response = await client.embeddings.create(
+        model=model,
+        input=text.strip()[:8000]  # Truncate to avoid token limits
+    )
+    return response.data[0].embedding
+
+def get_batch_text_embeddings(client: OpenAI, texts: List[str], model: str = "text-embedding-ada-002", 
+                             batch_size: int = 100) -> List[List[float]]:
+    """
+    Get embeddings for multiple texts in batches.
+    
+    :param client: An OpenAI client instance.
+    :param texts: List of texts to get embeddings for.
+    :param model: The embedding model to use.
+    :param batch_size: Number of texts to process in each batch.
+    :return: List of embedding vectors.
+    """
+    all_embeddings = []
+    
+    # Process texts in batches
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i + batch_size]
+        
+        # Prepare texts (handle empty texts)
+        processed_texts = []
+        for text in batch_texts:
+            if not text.strip():
+                processed_texts.append("placeholder")
+            else:
+                processed_texts.append(text.strip()[:8000])  # Truncate to avoid token limits
+        
+        try:
+            response = client.embeddings.create(
+                model=model,
+                input=processed_texts
+            )
+            
+            batch_embeddings = []
+            for j, data in enumerate(response.data):
+                if batch_texts[j].strip():  # Original text was not empty
+                    batch_embeddings.append(data.embedding)
+                else:  # Original text was empty, return zero vector
+                    batch_embeddings.append([0.0] * len(data.embedding))
+            
+            all_embeddings.extend(batch_embeddings)
+            
+        except Exception as e:
+            print(f"Error processing batch {i//batch_size + 1}: {e}")
+            # Return zero vectors for failed batch
+            embedding_dim = 1536  # Default dimension for Ada-002
+            for _ in batch_texts:
+                all_embeddings.append([0.0] * embedding_dim)
+    
+    return all_embeddings
+
+async def get_async_batch_text_embeddings(client: AsyncOpenAI, texts: List[str], model: str = "text-embedding-ada-002", 
+                                        batch_size: int = 100, max_concurrent: int = 5) -> List[List[float]]:
+    """
+    Get embeddings for multiple texts in batches asynchronously.
+    
+    :param client: An async OpenAI client instance.
+    :param texts: List of texts to get embeddings for.
+    :param model: The embedding model to use.
+    :param batch_size: Number of texts to process in each batch.
+    :param max_concurrent: Maximum number of concurrent requests.
+    :return: List of embedding vectors.
+    """
+    async def process_batch(batch_texts: List[str], batch_index: int) -> List[List[float]]:
+        """Process a single batch of texts."""
+        # Prepare texts (handle empty texts)
+        processed_texts = []
+        for text in batch_texts:
+            if not text.strip():
+                processed_texts.append("placeholder")
+            else:
+                processed_texts.append(text.strip()[:8000])  # Truncate to avoid token limits
+        
+        try:
+            response = await client.embeddings.create(
+                model=model,
+                input=processed_texts
+            )
+            
+            batch_embeddings = []
+            for j, data in enumerate(response.data):
+                if batch_texts[j].strip():  # Original text was not empty
+                    batch_embeddings.append(data.embedding)
+                else:  # Original text was empty, return zero vector
+                    batch_embeddings.append([0.0] * len(data.embedding))
+            
+            return batch_embeddings
+            
+        except Exception as e:
+            print(f"Error processing batch {batch_index}: {e}")
+            # Return zero vectors for failed batch
+            embedding_dim = 1536  # Default dimension for Ada-002
+            return [[0.0] * embedding_dim for _ in batch_texts]
+    
+    # Create batches
+    batches = []
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i + batch_size]
+        batches.append((batch_texts, i // batch_size))
+    
+    # Process batches with concurrency limit
+    all_embeddings = []
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def process_batch_with_semaphore(batch_data):
+        async with semaphore:
+            return await process_batch(batch_data[0], batch_data[1])
+    
+    # Process all batches
+    batch_results = await asyncio.gather(
+        *[process_batch_with_semaphore(batch_data) for batch_data in batches],
+        return_exceptions=True
+    )
+    
+    # Flatten results
+    for result in batch_results:
+        if isinstance(result, Exception):
+            print(f"Batch processing error: {result}")
+            # Add zero vectors for failed batch
+            embedding_dim = 1536
+            all_embeddings.extend([[0.0] * embedding_dim for _ in range(batch_size)])
+        else:
+            all_embeddings.extend(result)
+    
+    return all_embeddings[:len(texts)]  # Ensure we return exactly the right number

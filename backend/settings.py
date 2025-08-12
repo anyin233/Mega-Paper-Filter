@@ -87,6 +87,12 @@ class SettingsManager:
                 "model": "gpt-4o-mini",
                 "enabled": False
             },
+            "embedding": {
+                "api_key_encrypted": "",
+                "base_url": "",  # Empty means use same as openai
+                "model": "text-embedding-ada-002",
+                "enabled": False
+            },
             "processing": {
                 "auto_generate_summary": False,
                 "auto_generate_keywords": False,
@@ -170,6 +176,98 @@ class SettingsManager:
         
         self._save_settings()
     
+    def get_embedding_config(self) -> Dict[str, Any]:
+        """Get embedding model configuration with decrypted API key."""
+        embedding_config = self.settings.get("embedding", {})
+        openai_config = self.get_openai_config()
+        
+        # If embedding config is empty or disabled, fall back to OpenAI config
+        if not embedding_config.get("enabled", False) or not embedding_config.get("api_key_encrypted", ""):
+            return {
+                "api_key": openai_config["api_key"],
+                "base_url": openai_config["base_url"],
+                "model": embedding_config.get("model", "text-embedding-ada-002"),
+                "enabled": openai_config["enabled"],
+                "fallback_to_openai": True
+            }
+        
+        # Decrypt API key
+        encrypted_key = embedding_config.get("api_key_encrypted", "")
+        api_key = self._decrypt_value(encrypted_key) if encrypted_key else ""
+        
+        # Use embedding-specific base URL or fall back to OpenAI
+        base_url = embedding_config.get("base_url", "").strip()
+        if not base_url:
+            base_url = openai_config["base_url"]
+        
+        return {
+            "api_key": api_key,
+            "base_url": base_url,
+            "model": embedding_config.get("model", "text-embedding-ada-002"),
+            "enabled": embedding_config.get("enabled", False) and bool(api_key),
+            "fallback_to_openai": False
+        }
+    
+    def set_embedding_config(self, api_key: str = None, base_url: str = None, 
+                           model: str = None, enabled: bool = None):
+        """Set embedding model configuration with encrypted API key."""
+        if "embedding" not in self.settings:
+            self.settings["embedding"] = {}
+        
+        if api_key is not None:
+            # Encrypt and store API key
+            encrypted_key = self._encrypt_value(api_key)
+            self.settings["embedding"]["api_key_encrypted"] = encrypted_key
+        
+        if base_url is not None:
+            self.settings["embedding"]["base_url"] = base_url
+        
+        if model is not None:
+            self.settings["embedding"]["model"] = model
+        
+        if enabled is not None:
+            self.settings["embedding"]["enabled"] = enabled
+        
+        self._save_settings()
+    
+    def test_embedding_connection(self) -> Dict[str, Any]:
+        """Test embedding model connection with current settings."""
+        config = self.get_embedding_config()
+        
+        if not config["enabled"] or not config["api_key"]:
+            return {
+                "success": False,
+                "error": "Embedding model API key not configured"
+            }
+        
+        try:
+            # Import here to avoid dependency if OpenAI not used
+            from openai import OpenAI
+            
+            client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
+            
+            # Test with a simple embedding request
+            response = client.embeddings.create(
+                model=config["model"],
+                input="This is a test text for embedding API connectivity."
+            )
+            
+            embedding_dim = len(response.data[0].embedding)
+            
+            return {
+                "success": True,
+                "message": "Embedding connection successful",
+                "model": config["model"],
+                "embedding_dimensions": embedding_dim,
+                "fallback_to_openai": config.get("fallback_to_openai", False)
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
     def test_openai_connection(self) -> Dict[str, Any]:
         """Test OpenAI connection with current settings."""
         config = self.get_openai_config()
@@ -205,10 +303,10 @@ class SettingsManager:
             }
     
     def get_all_settings(self) -> Dict[str, Any]:
-        """Get all settings (with API key masked)."""
+        """Get all settings (with API keys masked)."""
         settings_copy = copy.deepcopy(self.settings)
         
-        # Mask API key in response
+        # Mask OpenAI API key in response
         if "openai" in settings_copy and "api_key_encrypted" in settings_copy["openai"]:
             encrypted_key = settings_copy["openai"]["api_key_encrypted"]
             if encrypted_key:
@@ -218,6 +316,17 @@ class SettingsManager:
             
             # Remove encrypted key from response
             del settings_copy["openai"]["api_key_encrypted"]
+        
+        # Mask embedding API key in response
+        if "embedding" in settings_copy and "api_key_encrypted" in settings_copy["embedding"]:
+            encrypted_key = settings_copy["embedding"]["api_key_encrypted"]
+            if encrypted_key:
+                settings_copy["embedding"]["api_key_masked"] = "***" + encrypted_key[-4:]
+            else:
+                settings_copy["embedding"]["api_key_masked"] = ""
+            
+            # Remove encrypted key from response
+            del settings_copy["embedding"]["api_key_encrypted"]
         
         return settings_copy
     
@@ -234,6 +343,8 @@ class SettingsManager:
             settings_copy = self.settings.copy()
             if "openai" in settings_copy:
                 settings_copy["openai"]["api_key_encrypted"] = ""
+            if "embedding" in settings_copy:
+                settings_copy["embedding"]["api_key_encrypted"] = ""
             return settings_copy
     
     def import_settings(self, settings_data: Dict[str, Any]):

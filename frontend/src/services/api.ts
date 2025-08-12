@@ -53,6 +53,13 @@ export interface ClusteringConfig {
   llm_model?: string;
   custom_model_name?: string;
   max_papers_llm?: number;
+  // New embedding-specific parameters
+  embedding_model?: string;
+  embedding_batch_size?: number;
+  embedding_clustering_algorithm?: string;
+  dbscan_eps?: number;
+  dbscan_min_samples?: number;
+  agglomerative_linkage?: string;
 }
 
 export interface SavedClusteringResult {
@@ -87,6 +94,12 @@ export interface Settings {
     enabled: boolean;
     api_key_masked: string;
   };
+  embedding: {
+    base_url: string;
+    model: string;
+    enabled: boolean;
+    api_key_masked: string;
+  };
   processing: {
     auto_generate_summary: boolean;
     auto_generate_keywords: boolean;
@@ -112,6 +125,11 @@ export interface SettingsUpdate {
   openai_enabled?: boolean;
   auto_generate_summary?: boolean;
   auto_generate_keywords?: boolean;
+  // New embedding model settings
+  embedding_api_key?: string;
+  embedding_base_url?: string;
+  embedding_model?: string;
+  embedding_enabled?: boolean;
 }
 
 export interface UnprocessedPaper {
@@ -220,6 +238,24 @@ class PaperLabelerAPI {
     return response.data;
   }
 
+  async getActiveJobs(): Promise<{
+    jobs: Array<{
+      job_id: string;
+      status: string;
+      progress: number;
+      message: string;
+      created_at: string;
+      updated_at: string;
+      has_result: boolean;
+      has_error: boolean;
+    }>;
+    active_count: number;
+    total_count: number;
+  }> {
+    const response = await axios.get(`${this.baseURL}/api/clustering/active-jobs`);
+    return response.data;
+  }
+
   async getClusteringResults(jobId: string): Promise<any> {
     const response = await axios.get(`${this.baseURL}/api/clustering/results/${jobId}`);
     return response.data;
@@ -264,6 +300,17 @@ class PaperLabelerAPI {
 
   async testOpenAIConnection(): Promise<{ success: boolean; message?: string; model?: string }> {
     const response = await axios.post(`${this.baseURL}/api/settings/test-openai`);
+    return response.data;
+  }
+
+  async testEmbeddingConnection(): Promise<{ 
+    success: boolean; 
+    message?: string; 
+    model?: string; 
+    embedding_dimensions?: number;
+    fallback_to_openai?: boolean;
+  }> {
+    const response = await axios.post(`${this.baseURL}/api/settings/test-embedding`);
     return response.data;
   }
 

@@ -161,15 +161,19 @@ def analyze_paper_with_ai(paper_info: dict, openai_client, model: str = "gpt-4o-
     if not response:
         return {'summary': '', 'keywords': []}
     
-    try:
-        result = json.loads(response)
-        return {
-            'summary': result.get('summary', ''),
-            'keywords': result.get('keywords', [])
-        }
-    except json.JSONDecodeError:
-        console.print(f"⚠️ Failed to parse AI response for paper: {paper_info.get('title', 'Unknown')}")
-        return {'summary': '', 'keywords': []}
+    # Use robust JSON parsing instead of direct json.loads
+    import sys
+    sys.path.append(str(Path(__file__).parent / "src"))
+    from openai_api import safe_json_parse
+    
+    result = safe_json_parse(response, fallback_dict={
+        'summary': f'Failed to parse AI response for abstract: {abstract[:100]}...',
+        'keywords': ['parsing-error']
+    })
+    return {
+        'summary': result.get('summary', ''),
+        'keywords': result.get('keywords', [])
+    }
 
 def process_papers_to_database(df: pd.DataFrame, 
                              column_mapping: dict, 

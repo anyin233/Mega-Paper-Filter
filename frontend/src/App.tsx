@@ -131,6 +131,12 @@ const App: React.FC = () => {
       component: <PaperList />,
     },
     {
+      id: 'ai-processing',
+      label: 'AI Processing',
+      icon: <AIIcon />,
+      component: <AIProcessingPage />,
+    },
+    {
       id: 'clustering',
       label: 'Clustering',
       icon: <ClusterIcon />,
@@ -146,12 +152,6 @@ const App: React.FC = () => {
       label: 'Visualization',
       icon: <VisualizeIcon />,
       component: <ClusterVisualization jobId={clusteringJobId || undefined} />,
-    },
-    {
-      id: 'ai-processing',
-      label: 'AI Processing',
-      icon: <AIIcon />,
-      component: <AIProcessingPage />,
     },
     {
       id: 'settings',

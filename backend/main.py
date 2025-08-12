@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Union
 import json
 import pandas as pd
+import numpy as np
 import asyncio
 import uuid
 from datetime import datetime
@@ -20,6 +21,7 @@ import os
 import sys
 import hashlib
 from loguru import logger
+from concurrent.futures import ThreadPoolExecutor
 
 # Add parent directory to path to import local modules
 sys.path.append(str(Path(__file__).parent.parent))
@@ -47,6 +49,7 @@ app.add_middleware(
 # Global state management
 job_status = {}  # Store background job statuses
 active_connections: List[WebSocket] = []  # WebSocket connections for real-time updates
+thread_pool = ThreadPoolExecutor(max_workers=2)  # Thread pool for CPU-intensive tasks
 
 # Database path
 DB_PATH = "papers.db"
@@ -89,10 +92,17 @@ class ClusteringConfig(BaseModel):
     max_features: int = Field(1000, description="Maximum TF-IDF features (for traditional clustering)")
     max_k: int = Field(15, description="Maximum number of clusters to test")
     min_papers: int = Field(5, description="Minimum papers required for clustering")
-    clustering_method: str = Field("traditional", description="Clustering method: 'traditional' or 'llm'")
+    clustering_method: str = Field("traditional", description="Clustering method: 'traditional', 'llm', or 'embedding'")
     llm_model: Optional[str] = Field("gpt-4o", description="LLM model for semantic clustering")
     custom_model_name: Optional[str] = Field(None, description="Custom model name when llm_model is 'custom'")
     max_papers_llm: int = Field(100, description="Maximum papers for LLM clustering (to manage costs)")
+    # New embedding-specific parameters
+    embedding_model: Optional[str] = Field("text-embedding-ada-002", description="Embedding model for embedding-based clustering")
+    embedding_batch_size: int = Field(50, description="Batch size for embedding generation")
+    embedding_clustering_algorithm: str = Field("kmeans", description="Clustering algorithm: 'kmeans', 'dbscan', 'agglomerative'")
+    dbscan_eps: float = Field(0.5, description="DBSCAN epsilon parameter")
+    dbscan_min_samples: int = Field(5, description="DBSCAN minimum samples parameter")
+    agglomerative_linkage: str = Field("ward", description="Agglomerative clustering linkage method")
 
 class JobStatus(BaseModel):
     job_id: str
@@ -111,6 +121,11 @@ class SettingsUpdate(BaseModel):
     openai_enabled: Optional[bool] = Field(None, description="Enable OpenAI processing")
     auto_generate_summary: Optional[bool] = Field(None, description="Auto-generate summaries")
     auto_generate_keywords: Optional[bool] = Field(None, description="Auto-generate keywords")
+    # New embedding model settings
+    embedding_api_key: Optional[str] = Field(None, description="Embedding model API key")
+    embedding_base_url: Optional[str] = Field(None, description="Embedding model base URL")
+    embedding_model: Optional[str] = Field(None, description="Embedding model name")
+    embedding_enabled: Optional[bool] = Field(None, description="Enable embedding model")
 
 class AIProcessRequest(BaseModel):
     paper_ids: List[str] = Field(..., description="List of paper IDs to process")
@@ -192,11 +207,24 @@ async def update_job_status(job_id: str, status: str, progress: float = None,
     if error:
         job_status[job_id]["error"] = error
     
-    # Broadcast to WebSocket clients
+    # Broadcast final status to WebSocket clients
     await manager.broadcast(json.dumps({
         "type": "job_update",
         "data": job_status[job_id]
     }))
+    
+    # Clean up finished jobs after a short delay to allow clients to receive final status
+    if status in ["completed", "failed"]:
+        logger.info(f"Job {job_id} finished with status '{status}'. Scheduling cleanup in 30 seconds.")
+        
+        async def cleanup_job():
+            await asyncio.sleep(30)  # Give clients time to receive the final status
+            if job_id in job_status:
+                logger.info(f"Cleaning up finished job {job_id} from memory")
+                del job_status[job_id]
+        
+        # Schedule cleanup as a background task
+        asyncio.create_task(cleanup_job())
 
 # API Endpoints
 
@@ -580,6 +608,9 @@ async def perform_clustering(job_id: str, config: ClusteringConfig):
         if config.clustering_method == "llm":
             # Perform LLM-based clustering
             await perform_llm_clustering(job_id, config)
+        elif config.clustering_method == "embedding":
+            # Perform embedding-based clustering
+            await perform_embedding_clustering(job_id, config)
         else:
             # Perform traditional clustering
             await perform_traditional_clustering(job_id, config)
@@ -790,13 +821,194 @@ async def perform_llm_clustering(job_id: str, config: ClusteringConfig):
     finally:
         analyzer.close()
 
+async def perform_embedding_clustering(job_id: str, config: ClusteringConfig):
+    """Background task to perform embedding-based clustering analysis."""
+    # Import embedding clustering analyzer
+    from embedding_clustering import EmbeddingClusteringAnalyzer
+    
+    # Get settings
+    settings_manager = get_settings_manager()
+    openai_config = settings_manager.get_openai_config()
+    embedding_config = settings_manager.get_embedding_config()
+    
+    if not embedding_config["enabled"]:
+        raise ValueError("Embedding model not configured or disabled")
+    
+    await update_job_status(job_id, "running", 0.2, "Setting up embedding clustering...")
+    
+    # Create embedding-specific clustering configuration
+    clustering_config = {
+        'embedding_params': {
+            'model': config.embedding_model or embedding_config['model'],
+            'batch_size': config.embedding_batch_size,
+            'max_concurrent': 3,
+            'cache_embeddings': True
+        },
+        'clustering_params': {
+            'max_k': config.max_k,
+            'random_state': 42,
+            'method': config.embedding_clustering_algorithm,
+            'dbscan_eps': config.dbscan_eps,
+            'dbscan_min_samples': config.dbscan_min_samples,
+            'agglomerative_linkage': config.agglomerative_linkage
+        },
+        'pca_params': {
+            'n_components': 2,
+            'random_state': 42
+        },
+        'dataset_name': config.dataset_name
+    }
+    
+    def run_clustering_sync():
+        """Synchronous clustering function to run in thread pool."""
+        # Create a new database connection within the thread
+        thread_db = PaperDatabase(DB_PATH)
+        analyzer = None
+        
+        try:
+            # Initialize analyzer with thread-local database connection
+            analyzer = EmbeddingClusteringAnalyzer(DB_PATH, clustering_config)
+            
+            # Load papers from database
+            df = analyzer.load_papers_from_db(config.dataset_name, config.min_papers)
+            
+            # Setup embedding client
+            analyzer.setup_embedding_client(embedding_config)
+            
+            # Create embeddings
+            analyzer.create_embeddings()
+            
+            # Find optimal clusters and perform clustering
+            optimal_k, inertias, silhouette_scores, k_range = analyzer.find_optimal_clusters()
+            clusterer, cluster_labels = analyzer.perform_clustering(optimal_k)
+            
+            # Create PCA projection
+            analyzer.create_pca_projection()
+            
+            # Analyze clusters
+            analyzer.analyze_clusters()
+            
+            # Generate visualization data
+            output_path = f"clustering_embedding_{job_id}.json"
+            visualization_data = analyzer.generate_visualization_data(output_path, config.dataset_name)
+            
+            # Save clustering results to database using thread-local connection
+            try:
+                result_name = f"Embedding Clustering - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                result_description = f"Embedding-based clustering using {embedding_config['model']} with {config.embedding_clustering_algorithm.upper()}"
+                
+                clustering_result_id = thread_db.save_clustering_result(
+                    job_id=job_id,
+                    name=result_name,
+                    description=result_description,
+                    dataset_filter=config.dataset_name,
+                    total_papers=len(analyzer.df),
+                    total_clusters=len(np.unique(cluster_labels)),
+                    clustering_method=f"Embedding + {config.embedding_clustering_algorithm.upper()}",
+                    feature_extraction=f"LLM Embeddings ({embedding_config['model']})",
+                    silhouette_score=max(silhouette_scores) if silhouette_scores else 0.0,
+                    visualization_data=visualization_data
+                )
+                
+                logger.info(f"Saved embedding clustering result to database with ID: {clustering_result_id}")
+            except Exception as e:
+                logger.error(f"Failed to save embedding clustering result to database: {e}")
+                clustering_result_id = None
+            
+            return analyzer, visualization_data, cluster_labels, silhouette_scores, optimal_k, clustering_result_id
+            
+        except Exception as e:
+            if analyzer:
+                analyzer.close()
+            raise e
+        finally:
+            # Always close the thread-local database connection
+            thread_db.close()
+    
+    try:
+        # Update progress before starting CPU-intensive work
+        await update_job_status(job_id, "running", 0.3, "Loading papers and setting up embedding client...")
+        
+        # Run the synchronous clustering operation in thread pool
+        loop = asyncio.get_event_loop()
+        analyzer, visualization_data, cluster_labels, silhouette_scores, optimal_k, clustering_result_id = await loop.run_in_executor(
+            thread_pool, run_clustering_sync
+        )
+        
+        # Update progress after clustering is complete
+        await update_job_status(job_id, "running", 0.9, "Generating cluster names...")
+        
+        # Generate cluster names using LLM if available (this is async, so run normally)
+        if openai_config["enabled"]:
+            await analyzer.generate_cluster_names(openai_config)
+        
+        await update_job_status(job_id, "running", 0.95, "Finalizing results...")
+        
+        # Complete the job
+        await update_job_status(
+            job_id, "completed", 1.0, 
+            "Embedding clustering analysis completed successfully!",
+            result={
+                "visualization_data": visualization_data,
+                "clustering_result_id": clustering_result_id,
+                "method": f"Embedding + {config.embedding_clustering_algorithm.upper()}",
+                "total_papers": len(analyzer.df),
+                "total_clusters": len(np.unique(cluster_labels)),
+                "silhouette_score": max(silhouette_scores) if silhouette_scores else 0.0,
+                "embedding_model": embedding_config['model'],
+                "clustering_algorithm": config.embedding_clustering_algorithm
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Embedding clustering failed: {e}")
+        await update_job_status(job_id, "failed", 0.0, f"Embedding clustering failed: {str(e)}", error=str(e))
+    finally:
+        if 'analyzer' in locals():
+            analyzer.close()
+
 @app.get("/api/clustering/status/{job_id}", response_model=JobStatus)
 async def get_job_status(job_id: str):
     """Get the status of a clustering job."""
     if job_id not in job_status:
-        raise HTTPException(status_code=404, detail="Job not found")
+        # Job might have been cleaned up because it finished
+        raise HTTPException(status_code=404, detail="Job not found or has been cleaned up (job completed)")
     
     return JobStatus(**job_status[job_id])
+
+@app.get("/api/clustering/active-jobs")
+async def get_active_jobs():
+    """Get all active and recent clustering jobs."""
+    # Return jobs from last 24 hours, prioritizing active ones
+    from datetime import datetime, timedelta
+    cutoff_time = datetime.now() - timedelta(hours=24)
+    
+    recent_jobs = []
+    for job_id, status in job_status.items():
+        try:
+            job_updated = datetime.fromisoformat(status["updated_at"])
+            if job_updated > cutoff_time:
+                recent_jobs.append({
+                    "job_id": job_id,
+                    "status": status["status"],
+                    "progress": status["progress"],
+                    "message": status["message"],
+                    "created_at": status["created_at"],
+                    "updated_at": status["updated_at"],
+                    "has_result": status["result"] is not None,
+                    "has_error": status["error"] is not None
+                })
+        except (ValueError, KeyError):
+            continue
+    
+    # Sort by updated time, most recent first
+    recent_jobs.sort(key=lambda x: x["updated_at"], reverse=True)
+    
+    return {
+        "jobs": recent_jobs,
+        "active_count": len([j for j in recent_jobs if j["status"] in ["pending", "running"]]),
+        "total_count": len(recent_jobs)
+    }
 
 @app.get("/api/clustering/results/{job_id}")
 async def get_clustering_results(job_id: str):
@@ -902,6 +1114,19 @@ async def update_settings(settings_update: SettingsUpdate):
         settings_manager.set_setting("processing.auto_generate_keywords", 
                                    settings_update.auto_generate_keywords)
     
+    # Update embedding settings
+    if any([settings_update.embedding_api_key is not None,
+            settings_update.embedding_base_url is not None,
+            settings_update.embedding_model is not None,
+            settings_update.embedding_enabled is not None]):
+        
+        settings_manager.set_embedding_config(
+            api_key=settings_update.embedding_api_key,
+            base_url=settings_update.embedding_base_url,
+            model=settings_update.embedding_model,
+            enabled=settings_update.embedding_enabled
+        )
+    
     return {"message": "Settings updated successfully"}
 
 @app.post("/api/settings/test-openai")
@@ -912,6 +1137,18 @@ async def test_openai_connection():
     
     if not result["success"]:
         logger.error(f"OpenAI connection test failed: {result['error']}")
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+@app.post("/api/settings/test-embedding")
+async def test_embedding_connection():
+    """Test embedding model API connection."""
+    settings_manager = get_settings_manager()
+    result = settings_manager.test_embedding_connection()
+    
+    if not result["success"]:
+        logger.error(f"Embedding connection test failed: {result['error']}")
         raise HTTPException(status_code=400, detail=result["error"])
     
     return result
@@ -1008,7 +1245,13 @@ async def perform_ai_processing(job_id: str, paper_ids: List[str],
                     
                     # Get AI response (async)
                     response_text = await get_async_openai_response(client, prompt, openai_config["model"])
-                    response_data = json.loads(response_text)
+                    
+                    # Use robust JSON parsing instead of direct json.loads
+                    from src.openai_api import safe_json_parse
+                    response_data = safe_json_parse(response_text, fallback_dict={
+                        "summary": f"AI processing failed for: {title[:100]}...",
+                        "keywords": ["processing-error"]
+                    })
                     
                     # Extract summary and keywords
                     new_summary = response_data.get("summary", "") if needs_summary else paper.get("summary", "")

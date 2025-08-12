@@ -215,17 +215,23 @@ class DatabaseClusteringAnalyzer:
             cluster_mask = self.cluster_labels == cluster_id
             cluster_papers = self.df[cluster_mask]
             
-            # Get cluster center in feature space
+            # Get cluster center in feature space (keeping for legacy compatibility)
             cluster_features = self.features[cluster_mask]
             cluster_center = cluster_features.mean(axis=0).A1
             
-            # Get top features (keywords) for this cluster
+            # Get top features (keeping for reference but not using for LLM)
             top_features_idx = cluster_center.argsort()[-15:][::-1]
             top_features = [feature_names[i] for i in top_features_idx]
             top_scores = cluster_center[top_features_idx]
             
             # Get sample paper titles
             sample_titles = cluster_papers['title'].head(5).tolist()
+            
+            # Get sample paper abstracts (NEW: for LLM cluster naming)
+            sample_abstracts = []
+            if 'summary' in cluster_papers.columns:
+                abstracts = cluster_papers['summary'].dropna().head(3).tolist()
+                sample_abstracts = [str(abstract) for abstract in abstracts if str(abstract).strip()]
             
             # Get most common keywords from papers in cluster
             all_keywords = []
@@ -237,8 +243,9 @@ class DatabaseClusteringAnalyzer:
             
             self.cluster_analysis[cluster_id] = {
                 'size': len(cluster_papers),
-                'top_tfidf_features': list(zip(top_features, top_scores)),
+                'top_tfidf_features': list(zip(top_features, top_scores)),  # Keep for backward compatibility
                 'sample_titles': sample_titles,
+                'sample_abstracts': sample_abstracts,  # NEW: actual abstracts for LLM
                 'common_keywords': common_keywords,
                 'avg_year': cluster_papers['publication_year'].mean() if 'publication_year' in cluster_papers.columns else None
             }
@@ -276,7 +283,16 @@ class DatabaseClusteringAnalyzer:
                     
                     # Get cluster name from LLM
                     naming_response = await get_cluster_name(client, analysis, model)
-                    naming_data = json.loads(naming_response)
+                    
+                    # Use robust JSON parsing instead of direct json.loads
+                    import sys
+                    sys.path.append(str(Path(__file__).parent / "src"))
+                    from openai_api import safe_json_parse
+                    
+                    naming_data = safe_json_parse(naming_response, fallback_dict={
+                        "name": f"Cluster {cluster_id}",
+                        "description": "Cluster naming failed due to JSON parsing error"
+                    })
                     
                     self.cluster_names[cluster_id] = {
                         'name': naming_data.get('name', f'Cluster {cluster_id}'),

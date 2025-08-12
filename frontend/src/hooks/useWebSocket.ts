@@ -133,11 +133,23 @@ export const useJobStatus = (): UseJobStatusReturn => {
         }
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to fetch job status');
-      setIsLoading(false);
-      if (intervalId) {
-        clearInterval(intervalId);
-        setIntervalId(null);
+      // Check if the job was cleaned up (finished)
+      if (err.response?.status === 404 && err.response?.data?.detail?.includes('cleaned up')) {
+        // Job was cleaned up because it finished - this is normal
+        console.log(`Job ${id} was cleaned up (completed)`);
+        setIsLoading(false);
+        if (intervalId) {
+          clearInterval(intervalId);
+          setIntervalId(null);
+        }
+      } else {
+        // Other errors - set error state
+        setError(err.message || 'Failed to fetch job status');
+        setIsLoading(false);
+        if (intervalId) {
+          clearInterval(intervalId);
+          setIntervalId(null);
+        }
       }
     }
   }, [intervalId]);

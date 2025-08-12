@@ -83,6 +83,8 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
   const [selectedPaper, setSelectedPaper] = useState<any>(null);
   const [paperDetailsOpen, setPaperDetailsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'scatter' | 'network'>('scatter');
+  const [showVisualization, setShowVisualization] = useState(false);
+  const [loadingClusterData, setLoadingClusterData] = useState(false);
   const networkRef = useRef<SVGSVGElement>(null);
   
   // Saved clustering results
@@ -119,7 +121,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
 
   const loadSavedClusteringResult = async (resultId: number) => {
     try {
-      setLoading(true);
+      setLoadingClusterData(true);
       setError(null);
       console.log('Loading saved clustering result:', resultId);
       const result = await api.getSavedClusteringResult(resultId);
@@ -136,7 +138,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
       console.error('Error loading saved clustering result:', err);
       setError(err.message || 'Failed to load saved clustering result');
     } finally {
-      setLoading(false);
+      setLoadingClusterData(false);
     }
   };
 
@@ -167,7 +169,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
 
   // Filter papers based on search and cluster selection
   const filteredPapers = useMemo(() => {
-    if (!clusterData) return [];
+    if (!clusterData || !clusterData.papers) return [];
     
     let papers = clusterData.papers;
     
@@ -202,18 +204,18 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
 
   // Create scatter plot data
   const plotData = useMemo(() => {
-    if (!clusterData) {
+    if (!clusterData || !clusterData.cluster_info) {
       console.log('No cluster data available for plotting');
       return [];
     }
     
     console.log('Creating plot data from cluster data:', {
-      totalPapers: clusterData.total_papers,
-      totalClusters: clusterData.total_clusters,
+      totalPapers: clusterData.total_papers || 0,
+      totalClusters: clusterData.total_clusters || 0,
       filteredPapersCount: filteredPapers.length
     });
     
-    const numClusters = clusterData.total_clusters;
+    const numClusters = clusterData.total_clusters || 0;
     const colors = generateClusterColors(numClusters);
     
     const traces: any[] = [];
@@ -409,12 +411,12 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
           .style('left', (event.pageX + 10) + 'px')
           .style('top', (event.pageY - 10) + 'px');
       })
-      .on('mouseout', function() {
+      .on('mouseout', function(_) {
         node.style('opacity', 1);
         link.style('opacity', 0.3);
         d3.selectAll('.network-tooltip').remove();
       })
-      .on('click', function(event: any, d: any) {
+      .on('click', function(_, d: any) {
         setSelectedPaper(d.paper);
         setPaperDetailsOpen(true);
       });
@@ -536,7 +538,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     };
   }, [viewMode, networkData, clusterData]);
 
-  const handleViewModeChange = (event: React.MouseEvent<HTMLElement>, newViewMode: 'scatter' | 'network' | null) => {
+  const handleViewModeChange = (_event: React.MouseEvent<HTMLElement>, newViewMode: 'scatter' | 'network' | null) => {
     if (newViewMode !== null) {
       setViewMode(newViewMode);
     }
@@ -584,69 +586,11 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>
-        Cluster Visualization
-      </Typography>
-
-      {/* Saved Clustering Results Selection */}
-      {!jobId && !externalData && (
-        <MuiPaper sx={{ p: 2, mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Select Clustering Result
-          </Typography>
-          
-          {loadingSavedResults ? (
-            <Skeleton variant="rectangular" height={56} />
-          ) : savedResults.length === 0 ? (
-            <Alert severity="info">
-              No saved clustering results found. Run clustering analysis to create visualizations.
-            </Alert>
-          ) : (
-            <FormControl fullWidth>
-              <InputLabel>Clustering Result</InputLabel>
-              <Select
-                value={selectedResultId || ''}
-                onChange={(e) => {
-                  const resultId = Number(e.target.value);
-                  if (resultId) {
-                    loadSavedClusteringResult(resultId);
-                  }
-                }}
-                label="Clustering Result"
-              >
-                {savedResults.map((result) => (
-                  <MenuItem key={result.id} value={result.id}>
-                    <Box>
-                      <Typography variant="body1">
-                        {result.name}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {result.total_papers} papers, {result.total_clusters} clusters
-                        {result.dataset_filter && ` • Dataset: ${result.dataset_filter}`}
-                        {result.silhouette_score && ` • Score: ${result.silhouette_score.toFixed(3)}`}
-                      </Typography>
-                    </Box>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-          
-          <Button
-            onClick={loadSavedResults}
-            size="small"
-            sx={{ mt: 1 }}
-            disabled={loadingSavedResults}
-          >
-            Refresh Results
-          </Button>
-        </MuiPaper>
-      )}
 
       {/* Show message when no clustering data is available */}
       {!clusterData && (!jobId && !externalData && savedResults.length > 0) && (
         <Alert severity="info" sx={{ mb: 3 }}>
-          Please select a clustering result from the dropdown above to visualize.
+          Please select a clustering result from the dropdown in the left panel to visualize.
         </Alert>
       )}
 
@@ -657,49 +601,548 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
       )}
 
       {/* Dataset Information - only show when we have data */}
-      {clusterData && (
-        <>
-          <MuiPaper sx={{ p: 2, mb: 3 }}>
-            <Typography variant="h6" gutterBottom>
-              Dataset Information
-            </Typography>
-            <Grid container spacing={2}>
-              <Grid item xs={12} sm={6} md={3}>
-                <Typography variant="body2" color="text.secondary">
-                  Total Papers
-                </Typography>
-                <Typography variant="h6">
-                  {clusterData.total_papers.toLocaleString()}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} sm={6} md={3}>
-                <Typography variant="body2" color="text.secondary">
-                  Clusters
-                </Typography>
-                <Typography variant="h6">
-                  {clusterData.total_clusters}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} sm={6} md={3}>
-                <Typography variant="body2" color="text.secondary">
-                  Method
-                </Typography>
-                <Typography variant="h6">
-                  {clusterData.metadata.clustering_method}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} sm={6} md={3}>
-                <Typography variant="body2" color="text.secondary">
-                  Features
-                </Typography>
-                <Typography variant="h6">
-                  {clusterData.metadata.feature_extraction}
-                </Typography>
-              </Grid>
+      {loadingClusterData ? (
+        <MuiPaper sx={{ p: 1.5, mb: 2 }}>
+          <Skeleton variant="text" width="40%" height={24} sx={{ mb: 1 }} />
+          <Skeleton variant="text" width="80%" height={20} />
+        </MuiPaper>
+      ) : clusterData && clusterData.metadata && (
+        <MuiPaper sx={{ p: 1.5, mb: 2 }}>
+          <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
+            Dataset Information
+          </Typography>
+          <Grid container spacing={1} alignItems="center">
+            <Grid item>
+              <Typography variant="body2" color="text.secondary">
+                <strong>{clusterData.total_papers?.toLocaleString() || 0}</strong> papers
+              </Typography>
             </Grid>
-          </MuiPaper>
+            <Grid item>
+              <Typography variant="body2" color="text.secondary">•</Typography>
+            </Grid>
+            <Grid item>
+              <Typography variant="body2" color="text.secondary">
+                <strong>{clusterData.total_clusters || 0}</strong> clusters
+              </Typography>
+            </Grid>
+            <Grid item>
+              <Typography variant="body2" color="text.secondary">•</Typography>
+            </Grid>
+            <Grid item>
+              <Typography variant="body2" color="text.secondary">
+                Method: <strong>{clusterData.metadata?.clustering_method || 'N/A'}</strong>
+              </Typography>
+            </Grid>
+            <Grid item>
+              <Typography variant="body2" color="text.secondary">•</Typography>
+            </Grid>
+            <Grid item>
+              <Typography variant="body2" color="text.secondary">
+                Features: <strong>{clusterData.metadata?.feature_extraction || 'N/A'}</strong>
+              </Typography>
+            </Grid>
+          </Grid>
+        </MuiPaper>
+      )}
 
-          <Grid container spacing={3}>
+      {/* Show message when no clustering data is available */}
+      {!clusterData && (!jobId && !externalData && savedResults.length > 0) && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          Please select a clustering result from the dropdown in the left panel to visualize.
+        </Alert>
+      )}
+
+      {!clusterData && (jobId || externalData) && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          No clustering data available. Please run clustering analysis first.
+        </Alert>
+      )}
+
+      {/* Main Layout: Cluster List (Left) + Paper List (Right) - ALWAYS SHOW */}
+      <Grid container spacing={3}>
+            {/* Left Side - Cluster List */}
+            <Grid item xs={12} md={4}>
+              <MuiPaper sx={{ p: 2, height: 'fit-content', position: 'sticky', top: 20 }}>
+                {/* Clustering Result Selector */}
+                {!jobId && !externalData && (
+                  <Box sx={{ mb: 2 }}>
+                    {loadingSavedResults ? (
+                      <Skeleton variant="rectangular" height={56} />
+                    ) : savedResults.length === 0 ? (
+                      <Alert severity="info" sx={{ mb: 2 }}>
+                        No saved clustering results found. Run clustering analysis to create visualizations.
+                      </Alert>
+                    ) : (
+                      <FormControl fullWidth size="small">
+                        <InputLabel>Select Clustering Result</InputLabel>
+                        <Select
+                          value={selectedResultId || ''}
+                          onChange={(e) => {
+                            const resultId = Number(e.target.value);
+                            if (resultId) {
+                              loadSavedClusteringResult(resultId);
+                              setSelectedCluster('all'); // Reset cluster selection
+                            }
+                          }}
+                          label="Select Clustering Result"
+                          disabled={loadingClusterData}
+                        >
+                          {savedResults.map((result) => (
+                            <MenuItem key={result.id} value={result.id}>
+                              <Box>
+                                <Typography variant="body2">
+                                  {result.name}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {result.total_papers} papers, {result.total_clusters} clusters
+                                  {result.silhouette_score && ` • Score: ${result.silhouette_score.toFixed(3)}`}
+                                </Typography>
+                              </Box>
+                            </MenuItem>
+                          ))}
+                        </Select>
+                        {loadingClusterData && (
+                          <Box sx={{ display: 'flex', alignItems: 'center', mt: 1 }}>
+                            <Skeleton variant="circular" width={20} height={20} sx={{ mr: 1 }} />
+                            <Typography variant="caption" color="text.secondary">
+                              Loading clustering data...
+                            </Typography>
+                          </Box>
+                        )}
+                      </FormControl>
+                    )}
+                    
+                    <Button
+                      onClick={loadSavedResults}
+                      size="small"
+                      sx={{ mt: 1 }}
+                      disabled={loadingSavedResults || loadingClusterData}
+                      fullWidth
+                      variant="outlined"
+                    >
+                      {loadingSavedResults ? 'Refreshing...' : 'Refresh Results'}
+                    </Button>
+                  </Box>
+                )}
+                
+                <Typography variant="h6" gutterBottom>
+                  Clusters ({clusterData && clusterData.cluster_info ? Object.keys(clusterData.cluster_info).length : 0})
+                </Typography>
+                
+                {/* Controls */}
+                <Box sx={{ mb: 2 }}>
+                  <Button
+                    variant="contained"
+                    onClick={() => setShowVisualization(true)}
+                    startIcon={<ScatterPlotIcon />}
+                    size="small"
+                    fullWidth
+                    sx={{ mb: 2 }}
+                    disabled={!clusterData || loadingClusterData}
+                  >
+                    Show Visualization
+                  </Button>
+                  
+                  <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center' }}>
+                    Total Papers: {clusterData ? filteredPapers.length : 0}
+                  </Typography>
+                </Box>
+
+                {/* Cluster List */}
+                {loadingClusterData ? (
+                  <Box sx={{ textAlign: 'center', py: 4 }}>
+                    <Skeleton variant="rectangular" height={80} sx={{ mb: 1 }} />
+                    <Skeleton variant="rectangular" height={80} sx={{ mb: 1 }} />
+                    <Skeleton variant="rectangular" height={80} sx={{ mb: 1 }} />
+                    <Typography variant="caption" color="text.secondary">
+                      Loading clusters...
+                    </Typography>
+                  </Box>
+                ) : clusterData && clusterData.cluster_info ? (
+                  <Box sx={{ maxHeight: 600, overflowY: 'auto' }}>
+                    {Object.entries(clusterData.cluster_info).map(([clusterId, info]) => {
+                      const isSelected = selectedCluster === clusterId;
+                      return (
+                        <Box 
+                          key={clusterId}
+                          sx={{ 
+                            p: 2, 
+                            mb: 1,
+                            cursor: 'pointer',
+                            border: 1,
+                            borderColor: isSelected ? 'primary.main' : 'grey.300',
+                            borderRadius: 1,
+                            backgroundColor: isSelected ? 'primary.50' : 'background.paper',
+                            '&:hover': {
+                              borderColor: 'primary.main',
+                              backgroundColor: 'primary.50'
+                            }
+                          }}
+                          onClick={() => setSelectedCluster(clusterId)}
+                        >
+                          <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 0.5 }}>
+                            {info.name || `Cluster ${clusterId}`}
+                          </Typography>
+                          
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                            {info.size} papers
+                          </Typography>
+                          
+                          {info.description && (
+                            <Typography variant="caption" sx={{ display: 'block', mb: 1, fontStyle: 'italic' }}>
+                              {info.description.length > 80 
+                                ? `${info.description.slice(0, 80)}...` 
+                                : info.description}
+                            </Typography>
+                          )}
+                          
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                            {info.top_keywords?.slice(0, 2).map(([keyword], index) => (
+                              <Chip
+                                key={index}
+                                label={keyword}
+                                size="small"
+                                variant="outlined"
+                                sx={{ fontSize: '0.65rem', height: '18px' }}
+                              />
+                            )) || []}
+                            {(info.top_keywords?.length || 0) > 2 && (
+                              <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
+                                +{(info.top_keywords?.length || 0) - 2}
+                              </Typography>
+                            )}
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                ) : (
+                  <Box sx={{ textAlign: 'center', py: 4, border: '1px dashed', borderColor: 'grey.300', borderRadius: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Select a clustering result to view clusters
+                    </Typography>
+                  </Box>
+                )}
+              </MuiPaper>
+            </Grid>
+
+            {/* Right Side - Paper List */}
+            <Grid item xs={12} md={8}>
+              <MuiPaper sx={{ p: 2, minHeight: '70vh' }}>
+                {loadingClusterData ? (
+                  <Box sx={{ p: 2 }}>
+                    <Skeleton variant="text" width="60%" height={40} sx={{ mb: 2 }} />
+                    <Skeleton variant="rectangular" height={100} sx={{ mb: 2 }} />
+                    <Skeleton variant="rectangular" height={120} sx={{ mb: 2 }} />
+                    <Skeleton variant="rectangular" height={120} sx={{ mb: 2 }} />
+                    <Box sx={{ textAlign: 'center', mt: 4 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        Loading papers...
+                      </Typography>
+                    </Box>
+                  </Box>
+                ) : !clusterData ? (
+                  <Box sx={{ textAlign: 'center', py: 8 }}>
+                    <Typography variant="h6" color="text.secondary" gutterBottom>
+                      No Dataset Selected
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Select a clustering result from the left panel to explore papers and clusters
+                    </Typography>
+                  </Box>
+                ) : selectedCluster === 'all' ? (
+                  <Box sx={{ textAlign: 'center', py: 8 }}>
+                    <Typography variant="h6" color="text.secondary" gutterBottom>
+                      Select a Cluster
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Choose a cluster from the left panel to view its papers
+                    </Typography>
+                  </Box>
+                ) : (
+                  <Box>
+                    {/* Search Bar for Papers */}
+                    <Box sx={{ mb: 3 }}>
+                      <TextField
+                        label="Search papers in this cluster"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        size="small"
+                        fullWidth
+                        sx={{ mb: 1 }}
+                      />
+                      <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'right' }}>
+                        Showing {filteredPapers.filter(p => p.cluster_id.toString() === selectedCluster).length} papers
+                      </Typography>
+                    </Box>
+                    
+                    {/* Cluster Header */}
+                    <Box sx={{ mb: 3, p: 2, backgroundColor: 'grey.50', borderRadius: 1 }}>
+                      <Typography variant="h5" gutterBottom>
+                        {clusterData?.cluster_info?.[selectedCluster]?.name || `Cluster ${selectedCluster}`}
+                      </Typography>
+                      
+                      {clusterData?.cluster_info?.[selectedCluster]?.description && (
+                        <Typography variant="body1" sx={{ mb: 2, fontStyle: 'italic' }}>
+                          {clusterData.cluster_info[selectedCluster].description}
+                        </Typography>
+                      )}
+                      
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+                        <Typography variant="body2">
+                          <strong>{clusterData?.cluster_info?.[selectedCluster]?.size || 0} papers</strong>
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          ({filteredPapers.filter(p => p.cluster_id.toString() === selectedCluster).length} shown)
+                        </Typography>
+                      </Box>
+
+                      {/* Top Keywords */}
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                        {clusterData?.cluster_info?.[selectedCluster]?.top_keywords?.slice(0, 8).map(([keyword, score], index) => (
+                          <Chip
+                            key={index}
+                            label={`${keyword} (${score.toFixed(2)})`}
+                            size="small"
+                            variant="outlined"
+                          />
+                        )) || []}
+                      </Box>
+                    </Box>
+
+                    {/* Papers List */}
+                    <Typography variant="h6" gutterBottom>
+                      Papers in this Cluster
+                    </Typography>
+                    
+                    <Box sx={{ maxHeight: '60vh', overflowY: 'auto', pr: 1 }}>
+                      {filteredPapers
+                        .filter(paper => paper.cluster_id.toString() === selectedCluster)
+                        .map((paper, index) => (
+                          <Box 
+                            key={paper.Key || index}
+                            sx={{ 
+                              p: 2, 
+                              mb: 2, 
+                              border: '1px solid', 
+                              borderColor: 'grey.200',
+                              borderRadius: 1,
+                              cursor: 'pointer',
+                              '&:hover': {
+                                backgroundColor: 'action.hover',
+                                borderColor: 'primary.main',
+                                boxShadow: 1
+                              }
+                            }}
+                            onClick={() => {
+                              setSelectedPaper(paper);
+                              setPaperDetailsOpen(true);
+                            }}
+                          >
+                            <Typography variant="h6" sx={{ mb: 1, fontWeight: 'bold' }}>
+                              {paper.Title}
+                            </Typography>
+                            
+                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                              <strong>Authors:</strong> {paper.Author}
+                            </Typography>
+                            
+                            <Box sx={{ display: 'flex', gap: 2, mb: 1, flexWrap: 'wrap' }}>
+                              {paper['Publication Year'] && (
+                                <Typography variant="caption" color="text.secondary">
+                                  <strong>Year:</strong> {paper['Publication Year']}
+                                </Typography>
+                              )}
+                              
+                              {paper.Venue && (
+                                <Typography variant="caption" color="text.secondary">
+                                  <strong>Venue:</strong> {paper.Venue}
+                                </Typography>
+                              )}
+
+                              {paper.DOI && (
+                                <Typography variant="caption" color="text.secondary">
+                                  <strong>DOI:</strong> {paper.DOI}
+                                </Typography>
+                              )}
+                            </Box>
+                            
+                            {paper.keywords && (
+                              <Box sx={{ mb: 1 }}>
+                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                  {paper.keywords.split(',').slice(0, 6).map((keyword: string, keywordIndex: number) => (
+                                    <Chip 
+                                      key={keywordIndex} 
+                                      label={keyword.trim()} 
+                                      size="small" 
+                                      variant="outlined"
+                                      sx={{ fontSize: '0.7rem', height: '22px' }}
+                                    />
+                                  ))}
+                                  {paper.keywords.split(',').length > 6 && (
+                                    <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
+                                      +{paper.keywords.split(',').length - 6} more
+                                    </Typography>
+                                  )}
+                                </Box>
+                              </Box>
+                            )}
+                            
+                            {paper.Abstract && (
+                              <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', lineHeight: 1.4 }}>
+                                {paper.Abstract.length > 200 
+                                  ? `${paper.Abstract.slice(0, 200)}...` 
+                                  : paper.Abstract}
+                              </Typography>
+                            )}
+                          </Box>
+                        ))
+                      }
+                    </Box>
+                  </Box>
+                )}
+              </MuiPaper>
+            </Grid>
+          </Grid>
+
+        {/* Visualization Modal */}
+        <Dialog
+          open={showVisualization}
+          onClose={() => setShowVisualization(false)}
+          maxWidth="xl"
+          fullWidth
+          PaperProps={{
+            sx: { height: '90vh' }
+          }}
+        >
+          <DialogTitle>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Typography variant="h6">
+                Cluster Visualization
+              </Typography>
+              
+              <ToggleButtonGroup
+                value={viewMode}
+                exclusive
+                onChange={handleViewModeChange}
+                aria-label="visualization mode"
+                size="small"
+              >
+                <ToggleButton value="scatter" aria-label="scatter plot">
+                  <ScatterPlotIcon sx={{ mr: 1 }} />
+                  Scatter Plot
+                </ToggleButton>
+                <ToggleButton value="network" aria-label="network view">
+                  <NetworkIcon sx={{ mr: 1 }} />
+                  Network View
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Box>
+          </DialogTitle>
+          
+          <DialogContent sx={{ p: 2, height: '100%' }}>
+            {viewMode === 'scatter' ? (
+              <Plot
+                data={plotData}
+                layout={{
+                  title: 'Paper Clusters (PCA Projection)',
+                  xaxis: {
+                    title: `PC1 (${clusterData?.metadata?.pca_explained_variance?.[0] ? (clusterData.metadata.pca_explained_variance[0] * 100).toFixed(1) : '0'}% variance)`,
+                  },
+                  yaxis: {
+                    title: `PC2 (${clusterData?.metadata?.pca_explained_variance?.[1] ? (clusterData.metadata.pca_explained_variance[1] * 100).toFixed(1) : '0'}% variance)`,
+                  },
+                  hovermode: 'closest',
+                  height: 600,
+                  margin: { t: 50, r: 20, b: 50, l: 60 },
+                  showlegend: true,
+                }}
+                config={{
+                  displayModeBar: true,
+                  modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+                  responsive: true,
+                }}
+                onClick={handlePlotClick}
+                onError={(error) => {
+                  console.error('Plotly error:', error);
+                  setError('Visualization error: ' + error.message);
+                }}
+                style={{ width: '100%', height: '600px' }}
+              />
+            ) : (
+              <Box sx={{ position: 'relative', width: '100%', height: '600px', overflow: 'hidden' }}>
+                <Typography variant="h6" sx={{ position: 'absolute', top: 10, left: 10, zIndex: 10 }}>
+                  Paper Network (Clustered Papers Connected)
+                </Typography>
+                
+                {/* Network Legend */}
+                <Box sx={{ 
+                  position: 'absolute', 
+                  top: 10, 
+                  right: 10, 
+                  zIndex: 10,
+                  background: 'rgba(255, 255, 255, 0.9)',
+                  padding: '8px',
+                  borderRadius: '4px',
+                  border: '1px solid #e0e0e0'
+                }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block' }}>
+                    Legend
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
+                    <Box sx={{ 
+                      width: 12, 
+                      height: 12, 
+                      borderRadius: '50%', 
+                      background: '#1976d2', 
+                      mr: 1 
+                    }} />
+                    <Typography variant="caption">Papers (nodes)</Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <Box sx={{ 
+                      width: 16, 
+                      height: 2, 
+                      background: '#666', 
+                      mr: 1 
+                    }} />
+                    <Typography variant="caption">Cluster connections</Typography>
+                  </Box>
+                </Box>
+
+                <svg
+                  ref={networkRef}
+                  width="100%"
+                  height="600"
+                  style={{ border: '1px solid #e0e0e0', borderRadius: '4px' }}
+                />
+                <Typography 
+                  variant="caption" 
+                  sx={{ 
+                    position: 'absolute', 
+                    bottom: 10, 
+                    left: 10, 
+                    color: 'text.secondary',
+                    background: 'rgba(255, 255, 255, 0.8)',
+                    padding: '4px 8px',
+                    borderRadius: '4px'
+                  }}
+                >
+                  Mouse wheel to zoom • Drag to pan • Drag nodes to rearrange • Hover to highlight • Click for details
+                </Typography>
+              </Box>
+            )}
+          </DialogContent>
+          
+          <DialogActions>
+            <Button onClick={() => setShowVisualization(false)}>
+              Close
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Keep for backwards compatibility - hide by default */}
+        <Grid container spacing={3} sx={{ display: 'none' }}>
         {/* Main Visualization */}
         <Grid item xs={12} md={8}>
           <MuiPaper sx={{ p: 2 }}>
@@ -737,11 +1180,11 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
                   label="Cluster"
                 >
                   <MenuItem value="all">All Clusters</MenuItem>
-                  {Object.keys(clusterData.cluster_info).map(clusterId => {
+                  {clusterData && clusterData.cluster_info && Object.keys(clusterData.cluster_info).map(clusterId => {
                     const clusterInfo = clusterData.cluster_info[clusterId];
-                    const displayName = clusterInfo.name 
+                    const displayName = clusterInfo?.name 
                       ? `${clusterInfo.name} (${clusterInfo.size})`
-                      : `Cluster ${clusterId} (${clusterInfo.size})`;
+                      : `Cluster ${clusterId} (${clusterInfo?.size})`;
                     return (
                       <MenuItem key={clusterId} value={clusterId}>
                         {displayName}
@@ -762,10 +1205,10 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
                 layout={{
                   title: 'Paper Clusters (PCA Projection)',
                   xaxis: {
-                    title: `PC1 (${(clusterData.metadata.pca_explained_variance[0] * 100).toFixed(1)}% variance)`,
+                    title: `PC1 (${clusterData?.metadata?.pca_explained_variance?.[0] ? (clusterData.metadata.pca_explained_variance[0] * 100).toFixed(1) : '0'}% variance)`,
                   },
                   yaxis: {
-                    title: `PC2 (${(clusterData.metadata.pca_explained_variance[1] * 100).toFixed(1)}% variance)`,
+                    title: `PC2 (${clusterData?.metadata?.pca_explained_variance?.[1] ? (clusterData.metadata.pca_explained_variance[1] * 100).toFixed(1) : '0'}% variance)`,
                   },
                   hovermode: 'closest',
                   height: 600,
@@ -851,7 +1294,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
         </Grid>
 
         {/* Cluster Information */}
-        <Grid item xs={12} md={4}>
+        <Grid item xs={12} md={4} sx={{ display: 'none' }}>
           <MuiPaper sx={{ p: 2, maxHeight: 600, overflow: 'auto' }}>
             <Typography variant="h6" gutterBottom>
               Cluster Details
@@ -862,48 +1305,48 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
                 Select a specific cluster to view details
               </Typography>
             ) : (
-              clusterData.cluster_info[selectedCluster] && (
+              clusterData && clusterData.cluster_info && clusterData.cluster_info[selectedCluster] && (
                 <Box>
                   <Typography variant="subtitle1" gutterBottom>
-                    {clusterData.cluster_info[selectedCluster].name || `Cluster ${selectedCluster}`}
+                    {clusterData.cluster_info[selectedCluster]?.name || `Cluster ${selectedCluster}`}
                   </Typography>
                   
-                  {clusterData.cluster_info[selectedCluster].description && (
+                  {clusterData.cluster_info[selectedCluster]?.description && (
                     <Typography variant="body2" color="text.secondary" gutterBottom sx={{ fontStyle: 'italic', mb: 2 }}>
                       {clusterData.cluster_info[selectedCluster].description}
                     </Typography>
                   )}
                   
                   <Typography variant="body2" gutterBottom>
-                    <strong>Size:</strong> {clusterData.cluster_info[selectedCluster].size} papers
+                    <strong>Size:</strong> {clusterData.cluster_info[selectedCluster]?.size} papers
                   </Typography>
 
                   <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
                     Top Keywords:
                   </Typography>
                   <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                    {clusterData.cluster_info[selectedCluster].top_keywords.slice(0, 8).map(([keyword, score], index) => (
+                    {clusterData.cluster_info[selectedCluster]?.top_keywords?.slice(0, 8).map(([keyword, score], index) => (
                       <Chip
                         key={index}
                         label={`${keyword} (${score.toFixed(2)})`}
                         size="small"
                         variant="outlined"
                       />
-                    ))}
+                    )) || []}
                   </Box>
 
                   <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
                     Sample Papers:
                   </Typography>
                   <List dense>
-                    {clusterData.cluster_info[selectedCluster].sample_titles.slice(0, 5).map((title, index) => (
+                    {clusterData.cluster_info[selectedCluster]?.sample_titles?.slice(0, 5).map((title, index) => (
                       <ListItem key={index} sx={{ pl: 0 }}>
                         <ListItemText 
                           primary={title}
                           primaryTypographyProps={{ variant: 'body2' }}
                         />
                       </ListItem>
-                    ))}
+                    )) || []}
                   </List>
                 </Box>
               )
@@ -915,17 +1358,20 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
               All Clusters Summary:
             </Typography>
             <List dense>
-              {Object.entries(clusterData.cluster_info).map(([clusterId, info]) => (
+              {clusterData && clusterData.cluster_info && Object.entries(clusterData.cluster_info).map(([clusterId, info]) => (
                 <ListItem 
                   key={clusterId} 
-                  button 
                   onClick={() => setSelectedCluster(clusterId)}
-                  selected={selectedCluster === clusterId}
-                  sx={{ pl: 0 }}
+                  sx={{ 
+                    pl: 0,
+                    cursor: 'pointer',
+                    '&:hover': { backgroundColor: 'action.hover' },
+                    backgroundColor: selectedCluster === clusterId ? 'action.selected' : 'transparent'
+                  }}
                 >
                   <ListItemText
-                    primary={info.name || `Cluster ${clusterId}`}
-                    secondary={`${info.size} papers${info.description ? ` • ${info.description.slice(0, 60)}${info.description.length > 60 ? '...' : ''}` : ''}`}
+                    primary={info?.name || `Cluster ${clusterId}`}
+                    secondary={`${info?.size} papers${info?.description ? ` • ${info.description.slice(0, 60)}${info.description.length > 60 ? '...' : ''}` : ''}`}
                   />
                 </ListItem>
               ))}
@@ -933,8 +1379,6 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
           </MuiPaper>
         </Grid>
       </Grid>
-        </>
-      )}
 
       {/* Paper Details Dialog */}
       <Dialog
@@ -1012,13 +1456,6 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
               </Grid>
             </DialogContent>
             <DialogActions>
-              {selectedPaper.Url && (
-                <Button 
-                  onClick={() => window.open(selectedPaper.Url, '_blank')}
-                >
-                  Open URL
-                </Button>
-              )}
               <Button onClick={() => setPaperDetailsOpen(false)}>
                 Close
               </Button>

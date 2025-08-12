@@ -129,7 +129,17 @@ class LLMClusteringAnalyzer:
             
             # Get LLM clustering result
             clustering_response = await get_llm_clustering(client, papers_data, max_clusters, model)
-            self.clustering_result = json.loads(clustering_response)
+            
+            # Use robust JSON parsing instead of direct json.loads
+            import sys
+            sys.path.append(str(Path(__file__).parent / "src"))
+            from openai_api import safe_json_parse
+            
+            self.clustering_result = safe_json_parse(clustering_response, fallback_dict={
+                "clusters": [],
+                "unassigned_papers": list(range(len(papers_data))),
+                "reasoning": "LLM clustering failed - JSON parsing error"
+            })
             
             console.print(f"✅ LLM clustering completed!")
             console.print(f"📊 Created {len(self.clustering_result['clusters'])} clusters")

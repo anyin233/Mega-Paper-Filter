@@ -36,10 +36,11 @@ const SettingsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingEmbedding, setTestingEmbedding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   
-  // Form state
+  // Form state - OpenAI
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
@@ -47,10 +48,19 @@ const SettingsPage: React.FC = () => {
   const [autoSummary, setAutoSummary] = useState(false);
   const [autoKeywords, setAutoKeywords] = useState(false);
   
+  // Form state - Embedding
+  const [embeddingApiKey, setEmbeddingApiKey] = useState('');
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState('');
+  const [embeddingModel, setEmbeddingModel] = useState('');
+  const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
+  
   // UI state
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showEmbeddingApiKey, setShowEmbeddingApiKey] = useState(false);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
+  const [embeddingTestDialogOpen, setEmbeddingTestDialogOpen] = useState(false);
+  const [embeddingTestResult, setEmbeddingTestResult] = useState<any>(null);
 
   useEffect(() => {
     loadSettings();
@@ -64,12 +74,19 @@ const SettingsPage: React.FC = () => {
       const settingsData = await api.getSettings();
       setSettings(settingsData);
       
-      // Populate form
+      // Populate OpenAI form
       setBaseUrl(settingsData.openai.base_url);
       setModel(settingsData.openai.model);
       setEnabled(settingsData.openai.enabled);
       setAutoSummary(settingsData.processing.auto_generate_summary);
       setAutoKeywords(settingsData.processing.auto_generate_keywords);
+      
+      // Populate Embedding form
+      if (settingsData.embedding) {
+        setEmbeddingBaseUrl(settingsData.embedding.base_url);
+        setEmbeddingModel(settingsData.embedding.model);
+        setEmbeddingEnabled(settingsData.embedding.enabled);
+      }
       
     } catch (err: any) {
       setError(err.message || 'Failed to load settings');
@@ -90,18 +107,25 @@ const SettingsPage: React.FC = () => {
         openai_enabled: enabled,
         auto_generate_summary: autoSummary,
         auto_generate_keywords: autoKeywords,
+        embedding_base_url: embeddingBaseUrl,
+        embedding_model: embeddingModel,
+        embedding_enabled: embeddingEnabled,
       };
       
-      // Only include API key if it was changed
+      // Only include API keys if they were changed
       if (apiKey.trim()) {
         updateData.openai_api_key = apiKey.trim();
+      }
+      if (embeddingApiKey.trim()) {
+        updateData.embedding_api_key = embeddingApiKey.trim();
       }
       
       await api.updateSettings(updateData);
       setSuccess('Settings saved successfully');
       
-      // Clear API key field after saving
+      // Clear API key fields after saving
       setApiKey('');
+      setEmbeddingApiKey('');
       
       // Reload settings to get updated masked key
       await loadSettings();
@@ -130,6 +154,26 @@ const SettingsPage: React.FC = () => {
       setTestDialogOpen(true);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const testEmbeddingConnection = async () => {
+    try {
+      setTestingEmbedding(true);
+      setEmbeddingTestResult(null);
+      
+      const result = await api.testEmbeddingConnection();
+      setEmbeddingTestResult(result);
+      setEmbeddingTestDialogOpen(true);
+      
+    } catch (err: any) {
+      setEmbeddingTestResult({
+        success: false,
+        error: err.message || 'Embedding connection test failed'
+      });
+      setEmbeddingTestDialogOpen(true);
+    } finally {
+      setTestingEmbedding(false);
     }
   };
 
@@ -240,6 +284,83 @@ const SettingsPage: React.FC = () => {
                     startIcon={saving ? <CircularProgress size={16} /> : <SaveIcon />}
                   >
                     {saving ? 'Saving...' : 'Save Settings'}
+                  </Button>
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Embedding Model Configuration */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader 
+              title="Embedding Model Configuration"
+              subheader="Configure embedding model for advanced clustering"
+            />
+            <CardContent>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <TextField
+                  fullWidth
+                  label="API Key"
+                  type={showEmbeddingApiKey ? 'text' : 'password'}
+                  value={embeddingApiKey}
+                  onChange={(e) => setEmbeddingApiKey(e.target.value)}
+                  placeholder={settings?.embedding?.api_key_masked ? 
+                    `Current: ${settings.embedding.api_key_masked}` : 
+                    'Enter embedding model API key (leave empty to use OpenAI)'
+                  }
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          onClick={() => setShowEmbeddingApiKey(!showEmbeddingApiKey)}
+                          edge="end"
+                        >
+                          {showEmbeddingApiKey ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }}
+                  helperText="Leave empty to use the same API key as OpenAI"
+                />
+
+                <TextField
+                  fullWidth
+                  label="Base URL"
+                  value={embeddingBaseUrl}
+                  onChange={(e) => setEmbeddingBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  helperText="Leave empty to use the same base URL as OpenAI"
+                />
+
+                <TextField
+                  fullWidth
+                  label="Model"
+                  value={embeddingModel}
+                  onChange={(e) => setEmbeddingModel(e.target.value)}
+                  placeholder="text-embedding-ada-002"
+                  helperText="Embedding model for generating text representations"
+                />
+
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={embeddingEnabled}
+                      onChange={(e) => setEmbeddingEnabled(e.target.checked)}
+                    />
+                  }
+                  label="Enable Embedding Model"
+                />
+
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant="outlined"
+                    onClick={testEmbeddingConnection}
+                    disabled={testingEmbedding || !embeddingModel}
+                    startIcon={testingEmbedding ? <CircularProgress size={16} /> : <TestIcon />}
+                  >
+                    {testingEmbedding ? 'Testing...' : 'Test Connection'}
                   </Button>
                 </Box>
               </Box>
@@ -365,6 +486,55 @@ const SettingsPage: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setTestDialogOpen(false)}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Embedding Test Result Dialog */}
+      <Dialog open={embeddingTestDialogOpen} onClose={() => setEmbeddingTestDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          Embedding Model Connection Test Result
+        </DialogTitle>
+        <DialogContent>
+          {embeddingTestResult && (
+            <Alert severity={embeddingTestResult.success ? 'success' : 'error'}>
+              {embeddingTestResult.success ? (
+                <Box>
+                  <Typography variant="body2">
+                    ✅ Embedding connection successful!
+                  </Typography>
+                  {embeddingTestResult.model && (
+                    <Typography variant="body2" sx={{ mt: 1 }}>
+                      Model: {embeddingTestResult.model}
+                    </Typography>
+                  )}
+                  {embeddingTestResult.embedding_dimensions && (
+                    <Typography variant="body2" sx={{ mt: 1 }}>
+                      Embedding Dimensions: {embeddingTestResult.embedding_dimensions}
+                    </Typography>
+                  )}
+                  {embeddingTestResult.fallback_to_openai && (
+                    <Typography variant="body2" sx={{ mt: 1, color: 'info.main' }}>
+                      ℹ️ Using OpenAI configuration (embedding config not set)
+                    </Typography>
+                  )}
+                </Box>
+              ) : (
+                <Box>
+                  <Typography variant="body2">
+                    ❌ Embedding connection failed
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    Error: {embeddingTestResult.error}
+                  </Typography>
+                </Box>
+              )}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEmbeddingTestDialogOpen(false)}>
             Close
           </Button>
         </DialogActions>
