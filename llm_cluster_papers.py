@@ -32,7 +32,7 @@ class LLMClusteringAnalyzer:
         self.clustering_result = None
         self.cluster_assignments = None
         
-    def load_papers_from_db(self, dataset_name: str = None, min_papers: int = 5, max_papers: int = 100) -> pd.DataFrame:
+    def load_papers_from_db(self, dataset_name: str = None, min_papers: int = 5, max_papers: int = 500) -> pd.DataFrame:
         """Load papers from database for LLM-based analysis."""
         console.print(f"📚 Loading papers from database for LLM clustering...")
         
@@ -360,7 +360,7 @@ def main():
     parser.add_argument('--output-dir', default='.', help='Output directory')
     parser.add_argument('--output-prefix', default='llm_clustering', help='Output file prefix')
     parser.add_argument('--max-clusters', type=int, default=8, help='Maximum number of clusters')
-    parser.add_argument('--max-papers', type=int, default=100, help='Maximum papers to process')
+    parser.add_argument('--max-papers', type=int, default=500, help='Maximum papers to process')
     parser.add_argument('--openai-api-key', required=True, help='OpenAI API key')
     parser.add_argument('--openai-base-url', default='https://api.openai.com/v1', help='OpenAI base URL')
     parser.add_argument('--openai-model', default='gpt-4o', help='OpenAI model to use (e.g., gpt-4o, gpt-4o-mini, or any custom model name)')

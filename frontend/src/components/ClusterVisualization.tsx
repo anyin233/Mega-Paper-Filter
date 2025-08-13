@@ -261,6 +261,55 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     return traces;
   }, [clusterData, filteredPapers]);
 
+  // Create full dataset scatter plot data for visualization dialog (ignores cluster selection)
+  const fullPlotData = useMemo(() => {
+    if (!clusterData || !clusterData.cluster_info) {
+      console.log('No cluster data available for full plotting');
+      return [];
+    }
+    
+    const numClusters = clusterData.total_clusters || 0;
+    const colors = generateClusterColors(numClusters);
+    
+    const traces: any[] = [];
+    
+    // Group ALL papers by cluster (not filtered by selection)
+    const allPapers = clusterData.papers || [];
+    const papersByCluster: Record<number, any[]> = {};
+    allPapers.forEach(paper => {
+      if (!papersByCluster[paper.cluster_id]) {
+        papersByCluster[paper.cluster_id] = [];
+      }
+      papersByCluster[paper.cluster_id].push(paper);
+    });
+    
+    // Create a trace for each cluster
+    Object.entries(papersByCluster).forEach(([clusterId, papers]) => {
+      const clusterIdNum = parseInt(clusterId);
+      const clusterInfo = clusterData.cluster_info[clusterId];
+      const clusterName = clusterInfo?.name ? clusterInfo.name : `Cluster ${clusterId}`;
+      
+      traces.push({
+        x: papers.map(p => p.pca_x),
+        y: papers.map(p => p.pca_y),
+        mode: 'markers',
+        type: 'scatter',
+        name: `${clusterName} (${papers.length} papers)`,
+        marker: {
+          color: colors[clusterIdNum % colors.length],
+          size: 8,
+          opacity: 0.7,
+        },
+        text: papers.map(p => `${p.Title}<br>Authors: ${p.Author}`),
+        hovertemplate: '%{text}<extra></extra>',
+        customdata: papers,
+      });
+    });
+    
+    console.log('Created full plot traces:', traces.length);
+    return traces;
+  }, [clusterData]);
+
   // Create network data for D3 visualization
   const networkData = useMemo(() => {
     if (!clusterData) return { nodes: [], links: [] };
@@ -313,9 +362,62 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     return { nodes, links };
   }, [clusterData, filteredPapers]);
 
+  // Create full network data for visualization dialog (ignores cluster selection)
+  const fullNetworkData = useMemo(() => {
+    if (!clusterData) return { nodes: [], links: [] };
+
+    console.log('Creating full network data');
+    
+    const allPapers = clusterData.papers || [];
+    const nodes = allPapers.map((paper, index) => ({
+      id: paper.Key || `paper_${index}`,
+      title: paper.Title,
+      author: paper.Author,
+      cluster: paper.cluster_id,
+      x: paper.pca_x * 500 + 400, // Scale and center the coordinates
+      y: paper.pca_y * 500 + 300,
+      paper: paper,
+    }));
+
+    const links: any[] = [];
+    
+    // Create links between papers in the same cluster (but limit to avoid too many connections)
+    const papersByCluster: Record<number, any[]> = {};
+    nodes.forEach(node => {
+      if (!papersByCluster[node.cluster]) {
+        papersByCluster[node.cluster] = [];
+      }
+      papersByCluster[node.cluster].push(node);
+    });
+
+    // For each cluster, create connections between papers
+    Object.values(papersByCluster).forEach(clusterPapers => {
+      if (clusterPapers.length <= 1) return;
+
+      // Connect each paper to a few others in its cluster (star pattern or limited connections)
+      clusterPapers.forEach((paper, index) => {
+        // Connect to next paper in cluster (circular)
+        const targetIndex = (index + 1) % clusterPapers.length;
+        const target = clusterPapers[targetIndex];
+        
+        links.push({
+          source: paper.id,
+          target: target.id,
+          cluster: paper.cluster,
+        });
+      });
+    });
+
+    console.log('Full network data created:', { nodeCount: nodes.length, linkCount: links.length });
+    return { nodes, links };
+  }, [clusterData]);
+
   // D3 Network Visualization Effect
   useEffect(() => {
-    if (viewMode !== 'network' || !networkRef.current || networkData.nodes.length === 0) {
+    // Use full network data when in visualization dialog, otherwise use filtered data
+    const currentNetworkData = showVisualization ? fullNetworkData : networkData;
+    
+    if (viewMode !== 'network' || !networkRef.current || currentNetworkData.nodes.length === 0) {
       return;
     }
 
@@ -341,8 +443,8 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     svg.call(zoom);
 
     // Create simulation
-    const simulation = d3.forceSimulation(networkData.nodes as any)
-      .force('link', d3.forceLink(networkData.links).id((d: any) => d.id).distance(50))
+    const simulation = d3.forceSimulation(currentNetworkData.nodes as any)
+      .force('link', d3.forceLink(currentNetworkData.links).id((d: any) => d.id).distance(50))
       .force('charge', d3.forceManyBody().strength(-200))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collision', d3.forceCollide().radius(15));
@@ -351,7 +453,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     const link = g.append('g')
       .attr('class', 'links')
       .selectAll('line')
-      .data(networkData.links)
+      .data(currentNetworkData.links)
       .enter().append('line')
       .attr('stroke', (d: any) => colors[d.cluster % colors.length])
       .attr('stroke-opacity', 0.3)
@@ -361,7 +463,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     const node = g.append('g')
       .attr('class', 'nodes')
       .selectAll('circle')
-      .data(networkData.nodes)
+      .data(currentNetworkData.nodes)
       .enter().append('circle')
       .attr('r', 8)
       .attr('fill', (d: any) => colors[d.cluster % colors.length])
@@ -377,7 +479,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     node
       .on('mouseover', function(event: any, d: any) {
         // Highlight connected nodes and links
-        const connectedLinks = networkData.links.filter((l: any) => 
+        const connectedLinks = currentNetworkData.links.filter((l: any) => 
           l.source.id === d.id || l.target.id === d.id
         );
         const connectedNodeIds = new Set();
@@ -536,7 +638,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     return () => {
       simulation.stop();
     };
-  }, [viewMode, networkData, clusterData]);
+  }, [viewMode, networkData, fullNetworkData, showVisualization, clusterData]);
 
   const handleViewModeChange = (_event: React.MouseEvent<HTMLElement>, newViewMode: 'scatter' | 'network' | null) => {
     if (newViewMode !== null) {
@@ -1043,7 +1145,7 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
           <DialogContent sx={{ p: 2, height: '100%' }}>
             {viewMode === 'scatter' ? (
               <Plot
-                data={plotData}
+                data={fullPlotData}
                 layout={{
                   title: 'Paper Clusters (PCA Projection)',
                   xaxis: {
@@ -1195,13 +1297,13 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
               </FormControl>
 
               <Typography variant="body2" sx={{ alignSelf: 'center', ml: 'auto' }}>
-                Showing {filteredPapers.length} papers
+                Showing {clusterData?.total_papers || clusterData?.papers?.length || 0} papers
               </Typography>
             </Box>
 
             {viewMode === 'scatter' ? (
               <Plot
-                data={plotData}
+                data={fullPlotData}
                 layout={{
                   title: 'Paper Clusters (PCA Projection)',
                   xaxis: {

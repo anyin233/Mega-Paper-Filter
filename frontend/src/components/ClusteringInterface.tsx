@@ -52,7 +52,7 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     clustering_method: 'traditional',
     llm_model: 'gpt-4o',
     custom_model_name: '',
-    max_papers_llm: 100,
+    max_papers_llm: 500,
     // Embedding parameters
     embedding_model: 'text-embedding-ada-002',
     embedding_batch_size: 50,
@@ -398,16 +398,16 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
               <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
                 <FormLabel>Maximum Papers for LLM: {config.max_papers_llm}</FormLabel>
                 <Slider
-                  value={config.max_papers_llm || 100}
+                  value={config.max_papers_llm || 500}
                   onChange={handleSliderChange('max_papers_llm')}
                   min={10}
-                  max={200}
+                  max={500}
                   step={10}
                   marks={[
-                    { value: 25, label: '25' },
                     { value: 50, label: '50' },
                     { value: 100, label: '100' },
-                    { value: 200, label: '200' },
+                    { value: 250, label: '250' },
+                    { value: 500, label: '500' },
                   ]}
                 />
                 <Typography variant="caption" color="text.secondary">
