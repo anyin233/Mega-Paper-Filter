@@ -50,6 +50,9 @@ export interface ClusteringConfig {
   max_k?: number;
   min_papers?: number;
   clustering_method?: string;
+  // Feature extraction parameters
+  feature_extraction_method?: string;
+  sentence_transformer_model?: string;
   // Traditional clustering algorithm parameters
   traditional_algorithm?: string;
   dbscan_eps?: number;

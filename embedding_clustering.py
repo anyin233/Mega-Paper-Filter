@@ -60,7 +60,7 @@ class EmbeddingClusteringAnalyzer:
                 'cache_embeddings': True
             },
             'clustering_params': {
-                'max_k': 15,
+                'max_k': 25,  # Increased from 15 to 25
                 'random_state': 42,
                 'method': 'kmeans',  # 'kmeans', 'dbscan', 'agglomerative'
                 'dbscan_eps': 0.5,
@@ -276,7 +276,7 @@ class EmbeddingClusteringAnalyzer:
         console.print("🎯 Finding optimal number of clusters...")
         
         method = self.config['clustering_params']['method']
-        max_k = min(self.config['clustering_params']['max_k'], len(self.df) - 1, 20)
+        max_k = min(self.config['clustering_params']['max_k'], len(self.df) - 1, 30)  # Increased from 20 to 30
         
         if method == 'dbscan':
             # For DBSCAN, we don't need to find optimal k

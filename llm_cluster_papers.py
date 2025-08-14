@@ -383,9 +383,9 @@ def main():
     parser = argparse.ArgumentParser(description="Cluster papers using LLM semantic analysis")
     parser.add_argument('--database', default='papers.db', help='Database file path')
     parser.add_argument('--dataset', help='Dataset name to filter (optional)')
-    parser.add_argument('--output-dir', default='.', help='Output directory')
+    parser.add_argument('--output-dir', default='output', help='Output directory')
     parser.add_argument('--output-prefix', default='llm_clustering', help='Output file prefix')
-    parser.add_argument('--max-clusters', type=int, default=8, help='Maximum number of clusters')
+    parser.add_argument('--max-clusters', type=int, default=12, help='Maximum number of clusters')  # Increased from 8 to 12
     parser.add_argument('--max-papers', type=int, default=500, help='Maximum papers to process')
     parser.add_argument('--openai-api-key', required=True, help='OpenAI API key')
     parser.add_argument('--openai-base-url', default='https://api.openai.com/v1', help='OpenAI base URL')

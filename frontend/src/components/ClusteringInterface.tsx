@@ -47,9 +47,12 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
   const [config, setConfig] = useState<ClusteringConfig>({
     dataset_name: '',
     max_features: 1000,
-    max_k: 15,
+    max_k: 25,  // Increased from 15 to 25
     min_papers: 5,
     clustering_method: 'traditional',
+    // Feature extraction parameters
+    feature_extraction_method: 'tfidf',
+    sentence_transformer_model: 'all-MiniLM-L6-v2',
     // Traditional clustering algorithm parameters
     traditional_algorithm: 'kmeans',
     dbscan_eps: 0.5,
@@ -352,6 +355,38 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
               <TextField
                 select
                 fullWidth
+                label="Feature Extraction Method"
+                value={config.feature_extraction_method || 'tfidf'}
+                onChange={handleConfigChange('feature_extraction_method')}
+                margin="normal"
+                helperText="Choose how to convert text to numerical features"
+              >
+                <MenuItem value="tfidf">TF-IDF (Term Frequency)</MenuItem>
+                <MenuItem value="sentence_transformer">Sentence Transformers (Semantic)</MenuItem>
+              </TextField>
+
+              {/* Sentence Transformer Model Selection */}
+              <Collapse in={config.feature_extraction_method === 'sentence_transformer'}>
+                <TextField
+                  select
+                  fullWidth
+                  label="Sentence Transformer Model"
+                  value={config.sentence_transformer_model || 'all-MiniLM-L6-v2'}
+                  onChange={handleConfigChange('sentence_transformer_model')}
+                  margin="normal"
+                  helperText="Choose the sentence transformer model for embeddings"
+                >
+                  <MenuItem value="all-MiniLM-L6-v2">all-MiniLM-L6-v2 (Recommended - Fast & Good)</MenuItem>
+                  <MenuItem value="all-mpnet-base-v2">all-mpnet-base-v2 (Better Quality, Slower)</MenuItem>
+                  <MenuItem value="all-distilroberta-v1">all-distilroberta-v1 (Good Balance)</MenuItem>
+                  <MenuItem value="paraphrase-MiniLM-L6-v2">paraphrase-MiniLM-L6-v2 (Paraphrase Detection)</MenuItem>
+                  <MenuItem value="multi-qa-MiniLM-L6-cos-v1">multi-qa-MiniLM-L6-cos-v1 (Question Answering)</MenuItem>
+                </TextField>
+              </Collapse>
+
+              <TextField
+                select
+                fullWidth
                 label="Clustering Algorithm"
                 value={config.traditional_algorithm || 'kmeans'}
                 onChange={handleConfigChange('traditional_algorithm')}
@@ -364,22 +399,25 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                 <MenuItem value="spectral">Spectral Clustering</MenuItem>
               </TextField>
 
-              <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
-                <FormLabel>Maximum Features: {config.max_features}</FormLabel>
-                <Slider
-                  value={config.max_features || 1000}
-                  onChange={handleSliderChange('max_features')}
-                  min={100}
-                  max={5000}
-                  step={100}
-                  marks={[
-                    { value: 500, label: '500' },
-                    { value: 1000, label: '1000' },
-                    { value: 2000, label: '2000' },
-                    { value: 5000, label: '5000' },
-                  ]}
-                />
-              </FormControl>
+              {/* TF-IDF Parameters */}
+              <Collapse in={config.feature_extraction_method === 'tfidf'}>
+                <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
+                  <FormLabel>Maximum Features: {config.max_features}</FormLabel>
+                  <Slider
+                    value={config.max_features || 1000}
+                    onChange={handleSliderChange('max_features')}
+                    min={100}
+                    max={5000}
+                    step={100}
+                    marks={[
+                      { value: 500, label: '500' },
+                      { value: 1000, label: '1000' },
+                      { value: 2000, label: '2000' },
+                      { value: 5000, label: '5000' },
+                    ]}
+                  />
+                </FormControl>
+              </Collapse>
 
               {/* DBSCAN Parameters */}
               <Collapse in={config.traditional_algorithm === 'dbscan'}>
@@ -612,7 +650,7 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
             <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
               <FormLabel>Maximum Clusters: {config.max_k}</FormLabel>
               <Slider
-                value={config.max_k || 15}
+                value={config.max_k || 25}  // Updated default from 15 to 25
                 onChange={handleSliderChange('max_k')}
                 min={2}
                 max={30}
@@ -622,6 +660,7 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                   { value: 10, label: '10' },
                   { value: 15, label: '15' },
                   { value: 20, label: '20' },
+                  { value: 25, label: '25' },
                   { value: 30, label: '30' },
                 ]}
               />

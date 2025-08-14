@@ -12,7 +12,8 @@ def open_browser(port, filename):
 def find_json_files():
     """Find JSON files that look like clustering data."""
     json_files = []
-    for file in os.listdir('.'):
+    current_dir = os.getcwd()
+    for file in os.listdir(current_dir):
         if file.endswith('.json') and ('data' in file or 'cluster' in file):
             json_files.append(file)
     return json_files
@@ -21,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description='Serve clustering visualization webpage')
     parser.add_argument('json_file', nargs='?', help='JSON clustering data file to serve')
     parser.add_argument('--port', type=int, default=8000, help='Port to serve on (default: 8000)')
-    parser.add_argument('--dir', default='.', help='Directory to serve from (default: current)')
+    parser.add_argument('--dir', default='output', help='Directory to serve from (default: output)')
     parser.add_argument('--no-browser', action='store_true', help='Do not open browser automatically')
     parser.add_argument('--html', default='clustering_visualization.html', help='HTML file to open')
     

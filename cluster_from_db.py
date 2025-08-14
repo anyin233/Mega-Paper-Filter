@@ -12,6 +12,11 @@ from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN, SpectralClu
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
 import json
 import argparse
 import os
@@ -27,6 +32,11 @@ from database import PaperDatabase
 
 warnings.filterwarnings('ignore')
 console = Console()
+
+# Check sentence transformers availability and show warning if needed
+if not SENTENCE_TRANSFORMERS_AVAILABLE:
+    console.print("⚠️ sentence-transformers not installed. Sentence transformer encoding will not be available.")
+    console.print("💡 Install with: pip install sentence-transformers")
 
 class DatabaseClusteringAnalyzer:
     """Clustering analyzer that works with database-stored papers."""
@@ -49,6 +59,10 @@ class DatabaseClusteringAnalyzer:
     def get_default_config(self) -> dict:
         """Get default clustering configuration with enhanced keyword weighting."""
         return {
+            'feature_extraction': {
+                'method': 'tfidf',  # Options: 'tfidf', 'sentence_transformer'
+                'sentence_transformer_model': 'all-MiniLM-L6-v2'  # Default sentence transformer model
+            },
             'tfidf_params': {
                 'max_features': 1000,
                 'stop_words': 'english',
@@ -60,7 +74,7 @@ class DatabaseClusteringAnalyzer:
             },
             'clustering_params': {
                 'method': 'kmeans',  # Options: 'kmeans', 'agglomerative', 'dbscan', 'spectral'
-                'max_k': 15,
+                'max_k': 25,  # Increased from 15 to 25
                 'random_state': 42,
                 'n_init': 10,
                 # DBSCAN parameters
@@ -169,14 +183,56 @@ class DatabaseClusteringAnalyzer:
         return self.df
     
     def create_features(self):
+        """Create features from combined text using the specified method."""
+        feature_method = self.config.get('feature_extraction', {}).get('method', 'tfidf')
+        
+        if feature_method == 'sentence_transformer':
+            return self._create_sentence_transformer_features()
+        else:
+            return self._create_tfidf_features()
+    
+    def _create_tfidf_features(self):
         """Create TF-IDF features from combined text."""
         console.print("🔧 Creating TF-IDF features...")
         
         self.vectorizer = TfidfVectorizer(**self.config['tfidf_params'])
         self.features = self.vectorizer.fit_transform(self.df['combined_text'])
         
-        console.print(f"✅ Created {self.features.shape[1]} features from {len(self.df)} papers")
+        console.print(f"✅ Created {self.features.shape[1]} TF-IDF features from {len(self.df)} papers")
         return self.features
+    
+    def _create_sentence_transformer_features(self):
+        """Create sentence transformer features from combined text."""
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            console.print("❌ sentence-transformers not available. Falling back to TF-IDF.")
+            return self._create_tfidf_features()
+        
+        model_name = self.config.get('feature_extraction', {}).get('sentence_transformer_model', 'all-MiniLM-L6-v2')
+        console.print(f"🔧 Creating sentence transformer features using {model_name}...")
+        
+        try:
+            # Load the sentence transformer model
+            model = SentenceTransformer(model_name)
+            
+            # Encode the combined text
+            sentences = self.df['combined_text'].tolist()
+            console.print(f"🚀 Encoding {len(sentences)} texts with sentence transformers...")
+            
+            # Create embeddings
+            embeddings = model.encode(sentences, show_progress_bar=True, convert_to_numpy=True)
+            
+            # Convert to sparse matrix format for consistency with TF-IDF
+            from scipy.sparse import csr_matrix
+            self.features = csr_matrix(embeddings)
+            self.vectorizer = None  # No vectorizer for sentence transformers
+            
+            console.print(f"✅ Created {self.features.shape[1]}-dimensional sentence transformer features from {len(self.df)} papers")
+            return self.features
+            
+        except Exception as e:
+            console.print(f"❌ Error creating sentence transformer features: {e}")
+            console.print("🔄 Falling back to TF-IDF features...")
+            return self._create_tfidf_features()
     
     def _create_clusterer(self, n_clusters: int, method: str = None):
         """Create a clustering algorithm instance based on the specified method."""
@@ -222,7 +278,7 @@ class DatabaseClusteringAnalyzer:
             # For DBSCAN, we'll return dummy values and let perform_clustering handle it
             return None, [], [], []
         
-        max_k = min(self.config['clustering_params']['max_k'], len(self.df) - 1, 20)
+        max_k = min(self.config['clustering_params']['max_k'], len(self.df) - 1, 30)  # Increased upper limit from 20 to 30
         if max_k < 2:
             raise ValueError("Need at least 2 papers for clustering")
         
@@ -338,25 +394,34 @@ class DatabaseClusteringAnalyzer:
         console.print("🔍 Analyzing cluster characteristics...")
         
         self.cluster_analysis = {}
-        feature_names = self.vectorizer.get_feature_names_out()
+        feature_method = self.config.get('feature_extraction', {}).get('method', 'tfidf')
+        
+        # Get feature names if using TF-IDF
+        if feature_method == 'tfidf' and self.vectorizer:
+            feature_names = self.vectorizer.get_feature_names_out()
+        else:
+            feature_names = None
         
         for cluster_id in np.unique(self.cluster_labels):
             cluster_mask = self.cluster_labels == cluster_id
             cluster_papers = self.df[cluster_mask]
             
-            # Get cluster center in feature space (keeping for legacy compatibility)
+            # Get cluster center in feature space
             cluster_features = self.features[cluster_mask]
             cluster_center = cluster_features.mean(axis=0).A1
             
-            # Get top features (keeping for reference but not using for LLM)
-            top_features_idx = cluster_center.argsort()[-15:][::-1]
-            top_features = [feature_names[i] for i in top_features_idx]
-            top_scores = cluster_center[top_features_idx]
+            # Get top features (only for TF-IDF)
+            top_features = []
+            top_scores = []
+            if feature_method == 'tfidf' and feature_names is not None:
+                top_features_idx = cluster_center.argsort()[-15:][::-1]
+                top_features = [feature_names[i] for i in top_features_idx]
+                top_scores = cluster_center[top_features_idx]
             
             # Get sample paper titles
             sample_titles = cluster_papers['title'].head(5).tolist()
             
-            # Get sample paper abstracts (NEW: for LLM cluster naming)
+            # Get sample paper abstracts (for LLM cluster naming)
             sample_abstracts = []
             if 'summary' in cluster_papers.columns:
                 abstracts = cluster_papers['summary'].dropna().head(3).tolist()
@@ -372,11 +437,12 @@ class DatabaseClusteringAnalyzer:
             
             self.cluster_analysis[cluster_id] = {
                 'size': len(cluster_papers),
-                'top_tfidf_features': list(zip(top_features, top_scores)),  # Keep for backward compatibility
+                'top_tfidf_features': list(zip(top_features, top_scores)) if top_features else [],
                 'sample_titles': sample_titles,
-                'sample_abstracts': sample_abstracts,  # NEW: actual abstracts for LLM
+                'sample_abstracts': sample_abstracts,
                 'common_keywords': common_keywords,
-                'avg_year': cluster_papers['publication_year'].mean() if 'publication_year' in cluster_papers.columns else None
+                'avg_year': cluster_papers['publication_year'].mean() if 'publication_year' in cluster_papers.columns else None,
+                'feature_method': feature_method
             }
         
         console.print(f"✅ Analyzed {len(self.cluster_analysis)} clusters")
@@ -500,12 +566,22 @@ class DatabaseClusteringAnalyzer:
         
         # Create metadata
         db_stats = self.db.get_statistics()
+        feature_method = self.config.get('feature_extraction', {}).get('method', 'tfidf')
+        clustering_method = self.config.get('clustering_params', {}).get('method', 'kmeans')
+        
+        # Get feature extraction details
+        if feature_method == 'sentence_transformer':
+            model_name = self.config.get('feature_extraction', {}).get('sentence_transformer_model', 'all-MiniLM-L6-v2')
+            feature_extraction_str = f'Sentence Transformer ({model_name})'
+        else:
+            feature_extraction_str = 'TF-IDF'
+        
         metadata = {
             'generated_at': pd.Timestamp.now().isoformat(),
             'source_database': str(self.db.db_path),
             'dataset_filter': dataset_name,
-            'clustering_method': 'K-means',
-            'feature_extraction': 'TF-IDF',
+            'clustering_method': clustering_method.title(),
+            'feature_extraction': feature_extraction_str,
             'total_papers_in_db': db_stats['total_papers'],
             'papers_used_for_clustering': len(papers_data),
             'pca_explained_variance': [float(x) for x in self.pca.explained_variance_ratio_],
@@ -640,7 +716,7 @@ def main():
     parser = argparse.ArgumentParser(description="Cluster papers from database")
     parser.add_argument('--database', default='papers.db', help='Database file path')
     parser.add_argument('--dataset', help='Dataset name to filter (optional)')
-    parser.add_argument('--output-dir', default='.', help='Output directory')
+    parser.add_argument('--output-dir', default='output', help='Output directory')
     parser.add_argument('--output-prefix', default='clustering', help='Output file prefix')
     parser.add_argument('--config', help='JSON configuration file')
     parser.add_argument('--show-plots', action='store_true', help='Display plots instead of saving')

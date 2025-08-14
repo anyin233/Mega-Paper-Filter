@@ -31,6 +31,19 @@ from cluster_from_db import DatabaseClusteringAnalyzer
 from process_zotero_csv import process_zotero_csv, clean_author_list, clean_keywords_list
 from backend.settings import get_settings_manager
 
+# Output directory configuration
+OUTPUT_DIR = Path("output")
+
+def ensure_output_directory():
+    """Ensure the output directory exists."""
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    return OUTPUT_DIR
+
+def get_output_path(filename: str) -> str:
+    """Get a path in the output directory for the given filename."""
+    ensure_output_directory()
+    return str(OUTPUT_DIR / filename)
+
 app = FastAPI(
     title="Paper Labeler API",
     description="Backend API for academic paper management and clustering",
@@ -90,9 +103,12 @@ class DatasetResponse(BaseModel):
 class ClusteringConfig(BaseModel):
     dataset_name: Optional[str] = Field(None, description="Dataset to cluster (None for all)")
     max_features: int = Field(1000, description="Maximum TF-IDF features (for traditional clustering)")
-    max_k: int = Field(15, description="Maximum number of clusters to test")
+    max_k: int = Field(25, description="Maximum number of clusters to test")  # Increased from 15 to 25
     min_papers: int = Field(5, description="Minimum papers required for clustering")
     clustering_method: str = Field("traditional", description="Clustering method: 'traditional', 'llm', or 'embedding'")
+    # Feature extraction parameters
+    feature_extraction_method: str = Field("tfidf", description="Feature extraction method: 'tfidf' or 'sentence_transformer'")
+    sentence_transformer_model: str = Field("all-MiniLM-L6-v2", description="Sentence transformer model name")
     # Traditional clustering algorithm parameters
     traditional_algorithm: str = Field("kmeans", description="Traditional clustering algorithm: 'kmeans', 'agglomerative', 'dbscan', 'spectral'")
     # DBSCAN parameters
@@ -632,6 +648,10 @@ async def perform_traditional_clustering(job_id: str, config: ClusteringConfig):
     """Background task to perform traditional clustering analysis."""
     # Create clustering configuration with enhanced keyword weighting
     clustering_config = {
+        'feature_extraction': {
+            'method': config.feature_extraction_method,
+            'sentence_transformer_model': config.sentence_transformer_model
+        },
         'tfidf_params': {
             'max_features': config.max_features,
             'stop_words': 'english',
@@ -697,7 +717,7 @@ async def perform_traditional_clustering(job_id: str, config: ClusteringConfig):
         await update_job_status(job_id, "running", 0.95, "Finalizing results...")
         
         # Generate visualization data
-        output_path = f"clustering_results_{job_id}.json"
+        output_path = get_output_path(f"clustering_results_{job_id}.json")
         json_data = analyzer.generate_visualization_data(output_path, config.dataset_name)
         
         # Save clustering result to database
@@ -789,7 +809,7 @@ async def perform_llm_clustering(job_id: str, config: ClusteringConfig):
         await update_job_status(job_id, "running", 0.8, "Generating visualization data...")
         
         # Generate visualization data
-        output_path = f"llm_clustering_results_{job_id}.json"
+        output_path = get_output_path(f"llm_clustering_results_{job_id}.json")
         json_data = analyzer.generate_visualization_data(output_path, config.dataset_name)
         
         await update_job_status(job_id, "running", 0.9, "Saving results to database...")
@@ -909,7 +929,7 @@ async def perform_embedding_clustering(job_id: str, config: ClusteringConfig):
             analyzer.analyze_clusters()
             
             # Generate visualization data
-            output_path = f"clustering_embedding_{job_id}.json"
+            output_path = get_output_path(f"clustering_embedding_{job_id}.json")
             visualization_data = analyzer.generate_visualization_data(output_path, config.dataset_name)
             
             # Save clustering results to database using thread-local connection

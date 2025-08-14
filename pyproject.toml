@@ -24,4 +24,5 @@ dependencies = [
     "aiofiles>=23.0.0",
     "cryptography>=41.0.0",
     "bibtexparser>=1.4.1",
+    "sentence-transformers>=5.1.0",
 ]

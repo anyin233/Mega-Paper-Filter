@@ -51,7 +51,7 @@ class PaperClusteringAnalyzer:
                 'max_df': 0.8
             },
             'clustering_params': {
-                'max_k': 15,
+                'max_k': 25,  # Increased from 15 to 25
                 'random_state': 42,
                 'n_init': 10
             },
@@ -355,7 +355,7 @@ def main():
     
     # Input/Output arguments
     parser.add_argument('input_csv', help='Path to input CSV file containing papers')
-    parser.add_argument('--output-dir', default='.', help='Output directory for results')
+    parser.add_argument('--output-dir', default='output', help='Output directory for results')
     parser.add_argument('--output-prefix', default='clustering', help='Prefix for output files')
     
     # CSV column mapping arguments
