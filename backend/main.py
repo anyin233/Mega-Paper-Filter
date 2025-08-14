@@ -109,6 +109,7 @@ class ClusteringConfig(BaseModel):
     # Feature extraction parameters
     feature_extraction_method: str = Field("tfidf", description="Feature extraction method: 'tfidf' or 'sentence_transformer'")
     sentence_transformer_model: str = Field("all-MiniLM-L6-v2", description="Sentence transformer model name")
+    custom_sentence_transformer_model: Optional[str] = Field(None, description="Custom sentence transformer model when sentence_transformer_model is 'custom'")
     # Traditional clustering algorithm parameters
     traditional_algorithm: str = Field("kmeans", description="Traditional clustering algorithm: 'kmeans', 'agglomerative', 'dbscan', 'spectral'")
     # DBSCAN parameters
@@ -650,7 +651,7 @@ async def perform_traditional_clustering(job_id: str, config: ClusteringConfig):
     clustering_config = {
         'feature_extraction': {
             'method': config.feature_extraction_method,
-            'sentence_transformer_model': config.sentence_transformer_model
+            'sentence_transformer_model': config.custom_sentence_transformer_model if config.sentence_transformer_model == 'custom' else config.sentence_transformer_model
         },
         'tfidf_params': {
             'max_features': config.max_features,

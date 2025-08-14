@@ -53,6 +53,7 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     // Feature extraction parameters
     feature_extraction_method: 'tfidf',
     sentence_transformer_model: 'all-MiniLM-L6-v2',
+    custom_sentence_transformer_model: '',
     // Traditional clustering algorithm parameters
     traditional_algorithm: 'kmeans',
     dbscan_eps: 0.5,
@@ -212,6 +213,30 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
       if (config.clustering_method === 'llm' && config.llm_model === 'custom') {
         if (!config.custom_model_name || !config.custom_model_name.trim()) {
           setError('Custom model name is required when using custom model');
+          return;
+        }
+      }
+      
+      // Validate custom sentence transformer model if needed
+      if (config.clustering_method === 'traditional' && 
+          config.feature_extraction_method === 'sentence_transformer' && 
+          config.sentence_transformer_model === 'custom') {
+        if (!config.custom_sentence_transformer_model || !config.custom_sentence_transformer_model.trim()) {
+          setError('Custom sentence transformer model name is required when using custom model');
+          return;
+        }
+        
+        // Basic format validation for model names
+        const modelName = config.custom_sentence_transformer_model.trim();
+        if (modelName.length < 3) {
+          setError('Model name should be at least 3 characters long');
+          return;
+        }
+        
+        // Suggest common patterns for valid model names
+        const hasValidPattern = /^[a-zA-Z0-9\-_\/\.]+$/.test(modelName);
+        if (!hasValidPattern) {
+          setError('Model name contains invalid characters. Use only letters, numbers, hyphens, underscores, forward slashes, and dots.');
           return;
         }
       }
@@ -381,7 +406,21 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                   <MenuItem value="all-distilroberta-v1">all-distilroberta-v1 (Good Balance)</MenuItem>
                   <MenuItem value="paraphrase-MiniLM-L6-v2">paraphrase-MiniLM-L6-v2 (Paraphrase Detection)</MenuItem>
                   <MenuItem value="multi-qa-MiniLM-L6-cos-v1">multi-qa-MiniLM-L6-cos-v1 (Question Answering)</MenuItem>
+                  <MenuItem value="custom">Custom Model...</MenuItem>
                 </TextField>
+
+                {/* Custom Sentence Transformer Model Input */}
+                <Collapse in={config.sentence_transformer_model === 'custom'}>
+                  <TextField
+                    fullWidth
+                    label="Custom Sentence Transformer Model"
+                    value={config.custom_sentence_transformer_model || ''}
+                    onChange={handleConfigChange('custom_sentence_transformer_model')}
+                    margin="normal"
+                    placeholder="e.g., sentence-transformers/all-MiniLM-L12-v2"
+                    helperText="Enter a Hugging Face model name or local model path. Examples: sentence-transformers/all-MiniLM-L12-v2, microsoft/DialoGPT-medium"
+                  />
+                </Collapse>
               </Collapse>
 
               <TextField
@@ -685,6 +724,7 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                   isRunning || 
                   (config.clustering_method === 'llm' && !openAIEnabled) ||
                   (config.clustering_method === 'llm' && config.llm_model === 'custom' && (!config.custom_model_name || !config.custom_model_name.trim())) ||
+                  (config.clustering_method === 'traditional' && config.feature_extraction_method === 'sentence_transformer' && config.sentence_transformer_model === 'custom' && (!config.custom_sentence_transformer_model || !config.custom_sentence_transformer_model.trim())) ||
                   (config.clustering_method === 'embedding' && !embeddingEnabled)
                 }
                 startIcon={<PlayIcon />}

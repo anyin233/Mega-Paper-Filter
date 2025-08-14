@@ -53,6 +53,7 @@ export interface ClusteringConfig {
   // Feature extraction parameters
   feature_extraction_method?: string;
   sentence_transformer_model?: string;
+  custom_sentence_transformer_model?: string;
   // Traditional clustering algorithm parameters
   traditional_algorithm?: string;
   dbscan_eps?: number;

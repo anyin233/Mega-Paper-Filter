@@ -211,15 +211,33 @@ class DatabaseClusteringAnalyzer:
         console.print(f"🔧 Creating sentence transformer features using {model_name}...")
         
         try:
+            # Validate custom model name
+            if not model_name or not model_name.strip():
+                console.print("❌ Empty model name provided. Using default model.")
+                model_name = 'all-MiniLM-L6-v2'
+            
             # Load the sentence transformer model
+            console.print(f"📥 Loading sentence transformer model: {model_name}")
             model = SentenceTransformer(model_name)
             
             # Encode the combined text
             sentences = self.df['combined_text'].tolist()
             console.print(f"🚀 Encoding {len(sentences)} texts with sentence transformers...")
             
-            # Create embeddings
-            embeddings = model.encode(sentences, show_progress_bar=True, convert_to_numpy=True)
+            # Create embeddings with progress bar
+            embeddings = model.encode(
+                sentences, 
+                show_progress_bar=True, 
+                convert_to_numpy=True,
+                batch_size=32  # Reasonable batch size for stability
+            )
+            
+            # Validate embeddings
+            if embeddings is None or len(embeddings) == 0:
+                raise ValueError("Generated embeddings are empty")
+            
+            if len(embeddings) != len(sentences):
+                raise ValueError(f"Mismatch between input texts ({len(sentences)}) and embeddings ({len(embeddings)})")
             
             # Convert to sparse matrix format for consistency with TF-IDF
             from scipy.sparse import csr_matrix
@@ -227,10 +245,24 @@ class DatabaseClusteringAnalyzer:
             self.vectorizer = None  # No vectorizer for sentence transformers
             
             console.print(f"✅ Created {self.features.shape[1]}-dimensional sentence transformer features from {len(self.df)} papers")
+            console.print(f"📊 Model: {model_name} | Embedding dimension: {embeddings.shape[1]}")
             return self.features
             
         except Exception as e:
-            console.print(f"❌ Error creating sentence transformer features: {e}")
+            error_msg = str(e)
+            console.print(f"❌ Error creating sentence transformer features: {error_msg}")
+            
+            # Provide specific error messages for common issues
+            if "No module named" in error_msg:
+                console.print("💡 This might be a missing dependency. Try: pip install transformers torch")
+            elif "404" in error_msg or "Repository not found" in error_msg:
+                console.print(f"💡 Model '{model_name}' not found. Check the model name on Hugging Face Hub.")
+                console.print("💡 Examples of valid models: sentence-transformers/all-MiniLM-L6-v2, sentence-transformers/all-mpnet-base-v2")
+            elif "out of memory" in error_msg.lower() or "cuda out of memory" in error_msg.lower():
+                console.print("💡 GPU memory issue. Try reducing batch_size or using CPU-only mode.")
+            elif "connection" in error_msg.lower():
+                console.print("💡 Network connection issue. Check your internet connection or try a different model.")
+            
             console.print("🔄 Falling back to TF-IDF features...")
             return self._create_tfidf_features()
     
