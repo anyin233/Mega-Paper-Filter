@@ -114,12 +114,12 @@ class LLMClusteringAnalyzer:
             )
             model = self.openai_config.get("model", "gpt-4o")
             
-            # Prepare papers data for LLM
+            # Prepare papers data for LLM (using title + AI summary)
             papers_data = []
             for _, paper in self.df.iterrows():
                 papers_data.append({
                     'title': paper['title'],
-                    'abstract': paper.get('abstract', ''),
+                    'summary': paper.get('summary', ''),  # Use AI summary instead of abstract
                     'paper_id': paper.get('paper_id', paper.get('id', ''))
                 })
             
@@ -150,33 +150,59 @@ class LLMClusteringAnalyzer:
             
             for cluster_idx, cluster in enumerate(self.clustering_result['clusters']):
                 cluster_name = cluster['name']
-                cluster_papers = cluster['papers']
+                cluster_papers = cluster['papers']  # This now contains only titles
                 
                 console.print(f"   🏷️  Cluster {cluster_idx}: {cluster_name} ({len(cluster_papers)} papers)")
                 
-                # Create cluster analysis data
-                cluster_analysis[cluster_idx] = {
-                    'name': cluster_name,
-                    'size': len(cluster_papers),
-                    'papers': cluster_papers,
-                    'sample_titles': [p['title'] for p in cluster_papers[:5]]
-                }
-                
-                # Assign papers to clusters based on title matching
+                # Fetch full metadata for papers in this cluster from dataframe
+                cluster_full_papers = []
                 for cluster_paper in cluster_papers:
+                    # cluster_paper is now just {'title': 'Paper Title'}
+                    paper_title = cluster_paper['title']
+                    
                     # Find matching paper in dataframe by title
-                    matches = self.df[self.df['title'] == cluster_paper['title']]
+                    matches = self.df[self.df['title'] == paper_title]
                     if len(matches) > 0:
-                        paper_id = matches.iloc[0]['paper_id'] if 'paper_id' in matches.columns else matches.iloc[0]['id']
+                        paper_row = matches.iloc[0]
+                        paper_id = paper_row['paper_id'] if 'paper_id' in paper_row else paper_row['id']
                         self.cluster_assignments[paper_id] = cluster_idx
+                        
+                        # Create full paper object with metadata for visualization
+                        full_paper = {
+                            'title': paper_row['title'],
+                            'abstract': paper_row.get('abstract', ''),
+                            'summary': paper_row.get('summary', ''),
+                            'authors': paper_row.get('authors_str', ''),
+                            'paper_id': paper_id
+                        }
+                        cluster_full_papers.append(full_paper)
                     else:
                         # Fallback: try partial matching
-                        partial_matches = self.df[self.df['title'].str.contains(cluster_paper['title'][:50], case=False, na=False)]
+                        partial_matches = self.df[self.df['title'].str.contains(paper_title[:50], case=False, na=False)]
                         if len(partial_matches) > 0:
-                            paper_id = partial_matches.iloc[0]['paper_id'] if 'paper_id' in partial_matches.columns else partial_matches.iloc[0]['id']
+                            paper_row = partial_matches.iloc[0]
+                            paper_id = paper_row['paper_id'] if 'paper_id' in paper_row else paper_row['id']
                             self.cluster_assignments[paper_id] = cluster_idx
+                            
+                            # Create full paper object with metadata
+                            full_paper = {
+                                'title': paper_row['title'],
+                                'abstract': paper_row.get('abstract', ''),
+                                'summary': paper_row.get('summary', ''),
+                                'authors': paper_row.get('authors_str', ''),
+                                'paper_id': paper_id
+                            }
+                            cluster_full_papers.append(full_paper)
                         else:
-                            console.print(f"⚠️  Could not match paper: {cluster_paper['title'][:60]}...")
+                            console.print(f"⚠️  Could not match paper: {paper_title[:60]}...")
+                
+                # Create cluster analysis data with full metadata
+                cluster_analysis[cluster_idx] = {
+                    'name': cluster_name,
+                    'size': len(cluster_full_papers),
+                    'papers': cluster_full_papers,  # Now contains full metadata
+                    'sample_titles': [p['title'] for p in cluster_full_papers[:5]]
+                }
             
             # Add cluster assignments to dataframe
             self.df['cluster_id'] = self.df.apply(

@@ -50,16 +50,23 @@ export interface ClusteringConfig {
   max_k?: number;
   min_papers?: number;
   clustering_method?: string;
-  llm_model?: string;
-  custom_model_name?: string;
-  max_papers_llm?: number;
-  // New embedding-specific parameters
-  embedding_model?: string;
-  embedding_batch_size?: number;
-  embedding_clustering_algorithm?: string;
+  // Traditional clustering algorithm parameters
+  traditional_algorithm?: string;
   dbscan_eps?: number;
   dbscan_min_samples?: number;
   agglomerative_linkage?: string;
+  spectral_assign_labels?: string;
+  // LLM clustering parameters
+  llm_model?: string;
+  custom_model_name?: string;
+  max_papers_llm?: number;
+  // Embedding clustering parameters
+  embedding_model?: string;
+  embedding_batch_size?: number;
+  embedding_clustering_algorithm?: string;
+  embedding_dbscan_eps?: number;
+  embedding_dbscan_min_samples?: number;
+  embedding_agglomerative_linkage?: string;
 }
 
 export interface SavedClusteringResult {

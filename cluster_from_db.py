@@ -8,9 +8,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN, SpectralClustering
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
 import json
 import argparse
 import os
@@ -46,19 +47,29 @@ class DatabaseClusteringAnalyzer:
         self.features_2d = None
         
     def get_default_config(self) -> dict:
-        """Get default clustering configuration."""
+        """Get default clustering configuration with enhanced keyword weighting."""
         return {
             'tfidf_params': {
                 'max_features': 1000,
                 'stop_words': 'english',
                 'ngram_range': (1, 2),
-                'min_df': 2,
-                'max_df': 0.8
+                'min_df': 2,  # Minimum documents for a term to be included
+                'max_df': 0.7,  # Reduced from 0.8 to give more weight to specific terms like keywords
+                'sublinear_tf': True,  # Use log-scaled term frequency
+                'norm': 'l2'  # L2 normalization to help with keyword emphasis
             },
             'clustering_params': {
+                'method': 'kmeans',  # Options: 'kmeans', 'agglomerative', 'dbscan', 'spectral'
                 'max_k': 15,
                 'random_state': 42,
-                'n_init': 10
+                'n_init': 10,
+                # DBSCAN parameters
+                'eps': 0.5,
+                'min_samples': 5,
+                # Agglomerative parameters
+                'linkage': 'ward',  # Options: 'ward', 'complete', 'average', 'single'
+                # Spectral parameters
+                'assign_labels': 'discretize'  # Options: 'kmeans', 'discretize'
             },
             'pca_params': {
                 'n_components': 2,
@@ -100,13 +111,40 @@ class DatabaseClusteringAnalyzer:
             lambda x: ', '.join(x) if x else ''
         )
         
-        # Create combined text for clustering
-        self.df['combined_text'] = (
-            self.df['title'].fillna('') + ' ' +
-            self.df['abstract'].fillna('') + ' ' +
-            self.df['summary'].fillna('') + ' ' +
-            self.df['keywords_str'].fillna('')
-        ).str.strip()
+        # Create combined text for clustering with enhanced keyword weighting
+        def create_weighted_text(row):
+            """Create text with weighted keywords for better clustering."""
+            text_parts = []
+            
+            # Add title (weight 1x)
+            if pd.notna(row['title']):
+                text_parts.append(row['title'])
+            
+            # Add abstract (weight 1x)
+            if pd.notna(row['abstract']):
+                text_parts.append(row['abstract'])
+                
+            # Add summary (weight 1x)
+            if pd.notna(row['summary']):
+                text_parts.append(row['summary'])
+            
+            # Add keywords with enhanced weight (repeat 3x for higher emphasis)
+            keywords_str = row['keywords_str']
+            if pd.notna(keywords_str) and keywords_str.strip():
+                # Add keywords 3 times to increase their TF-IDF weight
+                for _ in range(3):
+                    text_parts.append(keywords_str)
+                
+                # Also add individual keywords as separate terms
+                keywords_list = keywords_str.split(', ')
+                for keyword in keywords_list:
+                    if keyword.strip():
+                        # Add each keyword as a standalone term (additional emphasis)
+                        text_parts.append(keyword.strip())
+            
+            return ' '.join(text_parts).strip()
+        
+        self.df['combined_text'] = self.df.apply(create_weighted_text, axis=1)
         
         # Filter out papers with insufficient text
         initial_count = len(self.df)
@@ -140,9 +178,49 @@ class DatabaseClusteringAnalyzer:
         console.print(f"✅ Created {self.features.shape[1]} features from {len(self.df)} papers")
         return self.features
     
+    def _create_clusterer(self, n_clusters: int, method: str = None):
+        """Create a clustering algorithm instance based on the specified method."""
+        if method is None:
+            method = self.config['clustering_params'].get('method', 'kmeans')
+        
+        params = self.config['clustering_params']
+        
+        if method == 'kmeans':
+            return KMeans(
+                n_clusters=n_clusters,
+                random_state=params['random_state'],
+                n_init=params['n_init']
+            )
+        elif method == 'agglomerative':
+            return AgglomerativeClustering(
+                n_clusters=n_clusters,
+                linkage=params.get('linkage', 'ward')
+            )
+        elif method == 'dbscan':
+            # DBSCAN doesn't use n_clusters, but we include it for interface consistency
+            return DBSCAN(
+                eps=params.get('eps', 0.5),
+                min_samples=params.get('min_samples', 5)
+            )
+        elif method == 'spectral':
+            return SpectralClustering(
+                n_clusters=n_clusters,
+                random_state=params['random_state'],
+                assign_labels=params.get('assign_labels', 'discretize')
+            )
+        else:
+            raise ValueError(f"Unsupported clustering method: {method}")
+    
     def find_optimal_clusters(self) -> tuple:
         """Find optimal number of clusters using silhouette analysis."""
-        console.print("🎯 Finding optimal number of clusters...")
+        method = self.config['clustering_params'].get('method', 'kmeans')
+        console.print(f"🎯 Finding optimal number of clusters using {method}...")
+        
+        # DBSCAN doesn't require finding optimal k
+        if method == 'dbscan':
+            console.print("DBSCAN doesn't require predefined number of clusters")
+            # For DBSCAN, we'll return dummy values and let perform_clustering handle it
+            return None, [], [], []
         
         max_k = min(self.config['clustering_params']['max_k'], len(self.df) - 1, 20)
         if max_k < 2:
@@ -152,41 +230,92 @@ class DatabaseClusteringAnalyzer:
         silhouette_scores = []
         k_range = range(2, max_k + 1)
         
+        # Scale features for better performance with some algorithms
+        if method in ['spectral', 'agglomerative']:
+            scaler = StandardScaler()
+            scaled_features = scaler.fit_transform(self.features.toarray())
+        else:
+            scaled_features = self.features
+        
         for k in k_range:
-            kmeans = KMeans(
-                n_clusters=k,
-                random_state=self.config['clustering_params']['random_state'],
-                n_init=self.config['clustering_params']['n_init']
-            )
-            cluster_labels = kmeans.fit_predict(self.features)
-            
-            inertias.append(kmeans.inertia_)
-            silhouette_scores.append(silhouette_score(self.features, cluster_labels))
+            try:
+                clusterer = self._create_clusterer(k, method)
+                
+                if method in ['spectral', 'agglomerative']:
+                    cluster_labels = clusterer.fit_predict(scaled_features)
+                else:
+                    cluster_labels = clusterer.fit_predict(self.features)
+                
+                # Calculate silhouette score
+                if len(np.unique(cluster_labels)) > 1:  # Need at least 2 clusters for silhouette score
+                    if method in ['spectral', 'agglomerative']:
+                        score = silhouette_score(scaled_features, cluster_labels)
+                    else:
+                        score = silhouette_score(self.features, cluster_labels)
+                    silhouette_scores.append(score)
+                else:
+                    silhouette_scores.append(-1)
+                
+                # Calculate inertia (only for KMeans)
+                if method == 'kmeans':
+                    inertias.append(clusterer.inertia_)
+                else:
+                    inertias.append(0)  # Placeholder for other methods
+                    
+            except Exception as e:
+                console.print(f"⚠️ Error with k={k}: {e}")
+                silhouette_scores.append(-1)
+                inertias.append(0)
         
         # Find optimal k
-        optimal_k = k_range[np.argmax(silhouette_scores)]
-        max_silhouette = max(silhouette_scores)
+        if silhouette_scores and max(silhouette_scores) > 0:
+            optimal_k = k_range[np.argmax(silhouette_scores)]
+            max_silhouette = max(silhouette_scores)
+        else:
+            optimal_k = min(8, max_k)  # Fallback
+            max_silhouette = 0
         
         console.print(f"✅ Optimal clusters: {optimal_k} (silhouette score: {max_silhouette:.3f})")
         
         return optimal_k, inertias, silhouette_scores, k_range
     
-    def perform_clustering(self, n_clusters: int):
-        """Perform K-means clustering."""
-        console.print(f"🤖 Performing K-means clustering with {n_clusters} clusters...")
+    def perform_clustering(self, n_clusters: int = None):
+        """Perform clustering using the specified method."""
+        method = self.config['clustering_params'].get('method', 'kmeans')
         
-        kmeans = KMeans(
-            n_clusters=n_clusters,
-            random_state=self.config['clustering_params']['random_state'],
-            n_init=self.config['clustering_params']['n_init']
-        )
-        self.cluster_labels = kmeans.fit_predict(self.features)
+        if method == 'dbscan':
+            console.print(f"🤖 Performing DBSCAN clustering...")
+            clusterer = self._create_clusterer(None, method)  # n_clusters not used for DBSCAN
+        else:
+            if n_clusters is None:
+                n_clusters = 8  # Default fallback
+            console.print(f"🤖 Performing {method} clustering with {n_clusters} clusters...")
+            clusterer = self._create_clusterer(n_clusters, method)
+        
+        # Scale features for better performance with some algorithms
+        if method in ['spectral', 'agglomerative']:
+            scaler = StandardScaler()
+            scaled_features = scaler.fit_transform(self.features.toarray())
+            self.cluster_labels = clusterer.fit_predict(scaled_features)
+        else:
+            self.cluster_labels = clusterer.fit_predict(self.features)
+        
+        # Handle DBSCAN noise points (labeled as -1)
+        if method == 'dbscan':
+            n_clusters = len(np.unique(self.cluster_labels))
+            n_noise = list(self.cluster_labels).count(-1)
+            console.print(f"DBSCAN found {n_clusters - (1 if n_noise > 0 else 0)} clusters and {n_noise} noise points")
+            
+            # Convert noise points (-1) to a separate cluster for visualization
+            if n_noise > 0:
+                max_cluster = max(self.cluster_labels)
+                self.cluster_labels = np.array([max_cluster + 1 if x == -1 else x for x in self.cluster_labels])
         
         # Add cluster labels to dataframe
         self.df['cluster_id'] = self.cluster_labels
         
         console.print("✅ Clustering complete")
-        return kmeans, self.cluster_labels
+        return clusterer, self.cluster_labels
     
     def create_pca_projection(self):
         """Create PCA projection for visualization."""

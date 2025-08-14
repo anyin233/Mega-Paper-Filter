@@ -93,16 +93,26 @@ class ClusteringConfig(BaseModel):
     max_k: int = Field(15, description="Maximum number of clusters to test")
     min_papers: int = Field(5, description="Minimum papers required for clustering")
     clustering_method: str = Field("traditional", description="Clustering method: 'traditional', 'llm', or 'embedding'")
+    # Traditional clustering algorithm parameters
+    traditional_algorithm: str = Field("kmeans", description="Traditional clustering algorithm: 'kmeans', 'agglomerative', 'dbscan', 'spectral'")
+    # DBSCAN parameters
+    dbscan_eps: float = Field(0.5, description="DBSCAN epsilon parameter")
+    dbscan_min_samples: int = Field(5, description="DBSCAN minimum samples parameter")
+    # Agglomerative parameters  
+    agglomerative_linkage: str = Field("ward", description="Agglomerative clustering linkage method")
+    # Spectral parameters
+    spectral_assign_labels: str = Field("discretize", description="Spectral clustering label assignment method")
+    # LLM clustering parameters
     llm_model: Optional[str] = Field("gpt-4o", description="LLM model for semantic clustering")
     custom_model_name: Optional[str] = Field(None, description="Custom model name when llm_model is 'custom'")
-    max_papers_llm: int = Field(100, description="Maximum papers for LLM clustering (to manage costs)")
-    # New embedding-specific parameters
+    max_papers_llm: int = Field(500, description="Maximum papers for LLM clustering (to manage costs)")
+    # Embedding clustering parameters
     embedding_model: Optional[str] = Field("text-embedding-ada-002", description="Embedding model for embedding-based clustering")
     embedding_batch_size: int = Field(50, description="Batch size for embedding generation")
     embedding_clustering_algorithm: str = Field("kmeans", description="Clustering algorithm: 'kmeans', 'dbscan', 'agglomerative'")
-    dbscan_eps: float = Field(0.5, description="DBSCAN epsilon parameter")
-    dbscan_min_samples: int = Field(5, description="DBSCAN minimum samples parameter")
-    agglomerative_linkage: str = Field("ward", description="Agglomerative clustering linkage method")
+    embedding_dbscan_eps: float = Field(0.5, description="Embedding DBSCAN epsilon parameter")
+    embedding_dbscan_min_samples: int = Field(5, description="Embedding DBSCAN minimum samples parameter")
+    embedding_agglomerative_linkage: str = Field("ward", description="Embedding agglomerative clustering linkage method")
 
 class JobStatus(BaseModel):
     job_id: str
@@ -619,20 +629,30 @@ async def perform_clustering(job_id: str, config: ClusteringConfig):
         await update_job_status(job_id, "failed", 0.0, f"Clustering failed: {str(e)}", error=str(e))
 
 async def perform_traditional_clustering(job_id: str, config: ClusteringConfig):
-    """Background task to perform traditional K-means clustering analysis."""
-    # Create clustering configuration
+    """Background task to perform traditional clustering analysis."""
+    # Create clustering configuration with enhanced keyword weighting
     clustering_config = {
         'tfidf_params': {
             'max_features': config.max_features,
             'stop_words': 'english',
             'ngram_range': (1, 2),
-            'min_df': 2,
-            'max_df': 0.8
+            'min_df': 2,  # Minimum documents for a term to be included
+            'max_df': 0.7,  # Reduced from 0.8 to give more weight to specific terms like keywords
+            'sublinear_tf': True,  # Use log-scaled term frequency
+            'norm': 'l2'  # L2 normalization to help with keyword emphasis
         },
         'clustering_params': {
+            'method': config.traditional_algorithm,
             'max_k': config.max_k,
             'random_state': 42,
-            'n_init': 10
+            'n_init': 10,
+            # DBSCAN parameters
+            'eps': config.dbscan_eps,
+            'min_samples': config.dbscan_min_samples,
+            # Agglomerative parameters
+            'linkage': config.agglomerative_linkage,
+            # Spectral parameters
+            'assign_labels': config.spectral_assign_labels
         },
         'pca_params': {
             'n_components': 2,

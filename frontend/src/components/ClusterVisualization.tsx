@@ -1067,7 +1067,38 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
                                   <strong>DOI:</strong> {paper.DOI}
                                 </Typography>
                               )}
+
+                              {paper.Url && (
+                                <Typography variant="caption" color="text.secondary">
+                                  <strong>URL:</strong> 
+                                  <a 
+                                    href={paper.Url} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    style={{ 
+                                      color: 'inherit', 
+                                      textDecoration: 'underline',
+                                      marginLeft: '4px'
+                                    }}
+                                  >
+                                    {paper.Url.length > 40 ? `${paper.Url.slice(0, 40)}...` : paper.Url}
+                                  </a>
+                                </Typography>
+                              )}
                             </Box>
+
+                            {paper.summary && (
+                              <Box sx={{ mb: 1 }}>
+                                <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 'bold', mb: 0.5 }}>
+                                  AI Summary:
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', lineHeight: 1.4 }}>
+                                  {paper.summary.length > 200 
+                                    ? `${paper.summary.slice(0, 200)}...` 
+                                    : paper.summary}
+                                </Typography>
+                              </Box>
+                            )}
                             
                             {paper.keywords && (
                               <Box sx={{ mb: 1 }}>
@@ -1514,6 +1545,38 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
                     </Typography>
                     <Typography variant="body2" gutterBottom>
                       {selectedPaper.Abstract}
+                    </Typography>
+                  </Grid>
+                )}
+
+                {selectedPaper.summary && (
+                  <Grid item xs={12}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      AI Summary:
+                    </Typography>
+                    <Typography variant="body2" gutterBottom sx={{ fontStyle: 'italic' }}>
+                      {selectedPaper.summary}
+                    </Typography>
+                  </Grid>
+                )}
+
+                {selectedPaper.Url && (
+                  <Grid item xs={12}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      URL:
+                    </Typography>
+                    <Typography variant="body2" gutterBottom>
+                      <a 
+                        href={selectedPaper.Url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        style={{ 
+                          color: 'inherit', 
+                          textDecoration: 'underline'
+                        }}
+                      >
+                        {selectedPaper.Url}
+                      </a>
                     </Typography>
                   </Grid>
                 )}

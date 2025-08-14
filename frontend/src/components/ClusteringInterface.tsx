@@ -50,6 +50,13 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     max_k: 15,
     min_papers: 5,
     clustering_method: 'traditional',
+    // Traditional clustering algorithm parameters
+    traditional_algorithm: 'kmeans',
+    dbscan_eps: 0.5,
+    dbscan_min_samples: 5,
+    agglomerative_linkage: 'ward',
+    spectral_assign_labels: 'discretize',
+    // LLM clustering parameters
     llm_model: 'gpt-4o',
     custom_model_name: '',
     max_papers_llm: 500,
@@ -57,9 +64,9 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     embedding_model: 'text-embedding-ada-002',
     embedding_batch_size: 50,
     embedding_clustering_algorithm: 'kmeans',
-    dbscan_eps: 0.5,
-    dbscan_min_samples: 5,
-    agglomerative_linkage: 'ward',
+    embedding_dbscan_eps: 0.5,
+    embedding_dbscan_min_samples: 5,
+    embedding_agglomerative_linkage: 'ward',
   });
   const [error, setError] = useState<string | null>(null);
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
@@ -342,6 +349,21 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
 
             {/* Traditional Clustering Options */}
             <Collapse in={config.clustering_method === 'traditional'}>
+              <TextField
+                select
+                fullWidth
+                label="Clustering Algorithm"
+                value={config.traditional_algorithm || 'kmeans'}
+                onChange={handleConfigChange('traditional_algorithm')}
+                margin="normal"
+                helperText="Choose the clustering algorithm for traditional clustering"
+              >
+                <MenuItem value="kmeans">K-Means (Recommended)</MenuItem>
+                <MenuItem value="agglomerative">Agglomerative (Hierarchical)</MenuItem>
+                <MenuItem value="dbscan">DBSCAN (Density-based)</MenuItem>
+                <MenuItem value="spectral">Spectral Clustering</MenuItem>
+              </TextField>
+
               <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
                 <FormLabel>Maximum Features: {config.max_features}</FormLabel>
                 <Slider
@@ -358,6 +380,77 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                   ]}
                 />
               </FormControl>
+
+              {/* DBSCAN Parameters */}
+              <Collapse in={config.traditional_algorithm === 'dbscan'}>
+                <FormControl fullWidth sx={{ mt: 2, mb: 2 }}>
+                  <FormLabel>DBSCAN Epsilon (eps): {config.dbscan_eps}</FormLabel>
+                  <Slider
+                    value={config.dbscan_eps || 0.5}
+                    onChange={handleSliderChange('dbscan_eps')}
+                    min={0.1}
+                    max={2.0}
+                    step={0.1}
+                    marks={[
+                      { value: 0.3, label: '0.3' },
+                      { value: 0.5, label: '0.5' },
+                      { value: 1.0, label: '1.0' },
+                      { value: 1.5, label: '1.5' },
+                    ]}
+                  />
+                </FormControl>
+
+                <FormControl fullWidth sx={{ mt: 2, mb: 2 }}>
+                  <FormLabel>DBSCAN Min Samples: {config.dbscan_min_samples}</FormLabel>
+                  <Slider
+                    value={config.dbscan_min_samples || 5}
+                    onChange={handleSliderChange('dbscan_min_samples')}
+                    min={2}
+                    max={20}
+                    step={1}
+                    marks={[
+                      { value: 3, label: '3' },
+                      { value: 5, label: '5' },
+                      { value: 10, label: '10' },
+                      { value: 15, label: '15' },
+                    ]}
+                  />
+                </FormControl>
+              </Collapse>
+
+              {/* Agglomerative Parameters */}
+              <Collapse in={config.traditional_algorithm === 'agglomerative'}>
+                <TextField
+                  select
+                  fullWidth
+                  label="Linkage Method"
+                  value={config.agglomerative_linkage || 'ward'}
+                  onChange={handleConfigChange('agglomerative_linkage')}
+                  margin="normal"
+                  helperText="Linkage criterion for agglomerative clustering"
+                >
+                  <MenuItem value="ward">Ward (Recommended)</MenuItem>
+                  <MenuItem value="complete">Complete</MenuItem>
+                  <MenuItem value="average">Average</MenuItem>
+                  <MenuItem value="single">Single</MenuItem>
+                </TextField>
+              </Collapse>
+
+              {/* Spectral Parameters */}
+              <Collapse in={config.traditional_algorithm === 'spectral'}>
+                <TextField
+                  select
+                  fullWidth
+                  label="Label Assignment"
+                  value={config.spectral_assign_labels || 'discretize'}
+                  onChange={handleConfigChange('spectral_assign_labels')}
+                  margin="normal"
+                  helperText="Method for assigning labels in spectral clustering"
+                >
+                  <MenuItem value="discretize">Discretize (Recommended)</MenuItem>
+                  <MenuItem value="kmeans">K-Means</MenuItem>
+                </TextField>
+              </Collapse>
             </Collapse>
 
             {/* LLM Clustering Options */}
