@@ -61,7 +61,7 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     agglomerative_linkage: 'ward',
     spectral_assign_labels: 'discretize',
     // LLM clustering parameters
-    llm_model: 'gpt-4o',
+    llm_model: '',
     custom_model_name: '',
     max_papers_llm: 500,
     // Embedding parameters
@@ -209,10 +209,10 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
     try {
       setError(null);
       
-      // Validate custom model name if needed
-      if (config.clustering_method === 'llm' && config.llm_model === 'custom') {
-        if (!config.custom_model_name || !config.custom_model_name.trim()) {
-          setError('Custom model name is required when using custom model');
+      // Validate model name if LLM clustering is selected
+      if (config.clustering_method === 'llm') {
+        if (!config.llm_model || !config.llm_model.trim()) {
+          setError('Model name is required for LLM clustering');
           return;
         }
       }
@@ -538,32 +538,15 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
               </Alert>
 
               <TextField
-                select
                 fullWidth
                 label="LLM Model"
-                value={config.llm_model || 'gpt-4o'}
+                value={config.llm_model || ''}
                 onChange={handleConfigChange('llm_model')}
                 margin="normal"
-                helperText="Choose the OpenAI model for clustering analysis"
-              >
-                <MenuItem value="gpt-4o">GPT-4o (Recommended)</MenuItem>
-                <MenuItem value="gpt-4o-mini">GPT-4o Mini (Faster, less accurate)</MenuItem>
-                <MenuItem value="gpt-4-turbo">GPT-4 Turbo</MenuItem>
-                <MenuItem value="gpt-3.5-turbo">GPT-3.5 Turbo (Cheapest)</MenuItem>
-                <MenuItem value="custom">Custom Model...</MenuItem>
-              </TextField>
+                placeholder="Model name here"
+                helperText="Enter the OpenAI model name for clustering analysis"
+              />
 
-              {config.llm_model === 'custom' && (
-                <TextField
-                  fullWidth
-                  label="Custom Model Name"
-                  value={config.custom_model_name || ''}
-                  onChange={handleConfigChange('custom_model_name')}
-                  margin="normal"
-                  placeholder="e.g., gpt-4-1106-preview, claude-3-sonnet-20240229"
-                  helperText="Enter the exact model name as supported by your OpenAI-compatible API"
-                />
-              )}
 
               <FormControl fullWidth sx={{ mt: 3, mb: 2 }}>
                 <FormLabel>Maximum Papers for LLM: {config.max_papers_llm}</FormLabel>
@@ -723,7 +706,7 @@ const ClusteringInterface: React.FC<ClusteringInterfaceProps> = ({
                 disabled={
                   isRunning || 
                   (config.clustering_method === 'llm' && !openAIEnabled) ||
-                  (config.clustering_method === 'llm' && config.llm_model === 'custom' && (!config.custom_model_name || !config.custom_model_name.trim())) ||
+                  (config.clustering_method === 'llm' && (!config.llm_model || !config.llm_model.trim())) ||
                   (config.clustering_method === 'traditional' && config.feature_extraction_method === 'sentence_transformer' && config.sentence_transformer_model === 'custom' && (!config.custom_sentence_transformer_model || !config.custom_sentence_transformer_model.trim())) ||
                   (config.clustering_method === 'embedding' && !embeddingEnabled)
                 }

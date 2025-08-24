@@ -27,6 +27,7 @@ import {
 import {
   ScatterPlot as ScatterPlotIcon,
   AccountTree as NetworkIcon,
+  Download as DownloadIcon,
 } from '@mui/icons-material';
 import Plot from 'react-plotly.js';
 import * as d3 from 'd3';
@@ -655,6 +656,93 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
     }
   };
 
+  // Generate markdown content for current cluster
+  const generateClusterMarkdown = () => {
+    if (!clusterData || selectedCluster === 'all') return '';
+
+    const clusterInfo = clusterData.cluster_info[selectedCluster];
+    const clusterPapers = filteredPapers.filter(paper => paper.cluster_id.toString() === selectedCluster);
+    
+    let markdown = `# ${clusterInfo?.name || `Cluster ${selectedCluster}`}\n\n`;
+    
+    // Add cluster description if available
+    if (clusterInfo?.description) {
+      markdown += `${clusterInfo.description}\n\n`;
+    }
+    
+    // Add cluster statistics
+    markdown += `**Papers in cluster:** ${clusterInfo?.size || clusterPapers.length}\n\n`;
+    
+    // Add top keywords
+    if (clusterInfo?.top_keywords && clusterInfo.top_keywords.length > 0) {
+      markdown += `**Key topics:** ${clusterInfo.top_keywords.slice(0, 8).map(([keyword, score]) => `${keyword} (${score.toFixed(2)})`).join(', ')}\n\n`;
+    }
+    
+    markdown += `---\n\n`;
+    
+    // Add each paper as a separate section
+    clusterPapers.forEach((paper, index) => {
+      markdown += `## ${index + 1}. ${paper.Title}\n\n`;
+      
+      markdown += `**Authors:** ${paper.Author}\n\n`;
+      
+      if (paper['Publication Year']) {
+        markdown += `**Year:** ${paper['Publication Year']}\n\n`;
+      }
+      
+      if (paper.Venue) {
+        markdown += `**Venue:** ${paper.Venue}\n\n`;
+      }
+      
+      if (paper.DOI) {
+        markdown += `**DOI:** ${paper.DOI}\n\n`;
+      }
+      
+      if (paper.Url) {
+        markdown += `**URL:** [${paper.Url}](${paper.Url})\n\n`;
+      }
+      
+      if (paper.summary) {
+        markdown += `**AI Summary:**\n${paper.summary}\n\n`;
+      }
+      
+      if (paper.Abstract) {
+        markdown += `**Abstract:**\n${paper.Abstract}\n\n`;
+      }
+      
+      if (paper.keywords) {
+        markdown += `**Keywords:** ${paper.keywords}\n\n`;
+      }
+      
+      markdown += `---\n\n`;
+    });
+    
+    return markdown;
+  };
+
+  // Download markdown file
+  const handleExportCluster = () => {
+    if (!clusterData || selectedCluster === 'all') {
+      setError('Please select a specific cluster to export');
+      return;
+    }
+
+    const markdown = generateClusterMarkdown();
+    const clusterInfo = clusterData.cluster_info[selectedCluster];
+    const clusterName = clusterInfo?.name || `Cluster_${selectedCluster}`;
+    const filename = `${clusterName.replace(/[^a-zA-Z0-9]/g, '_')}_papers.md`;
+    
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   if (loading) {
     return (
       <Box>
@@ -965,14 +1053,24 @@ const ClusterVisualization: React.FC<VisualizationProps> = ({ jobId, data: exter
                   <Box>
                     {/* Search Bar for Papers */}
                     <Box sx={{ mb: 3 }}>
-                      <TextField
-                        label="Search papers in this cluster"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        size="small"
-                        fullWidth
-                        sx={{ mb: 1 }}
-                      />
+                      <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                        <TextField
+                          label="Search papers in this cluster"
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          size="small"
+                          sx={{ flexGrow: 1 }}
+                        />
+                        <Button
+                          variant="outlined"
+                          startIcon={<DownloadIcon />}
+                          onClick={handleExportCluster}
+                          size="small"
+                          sx={{ minWidth: 'auto', px: 2 }}
+                        >
+                          Export
+                        </Button>
+                      </Box>
                       <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'right' }}>
                         Showing {filteredPapers.filter(p => p.cluster_id.toString() === selectedCluster).length} papers
                       </Typography>
