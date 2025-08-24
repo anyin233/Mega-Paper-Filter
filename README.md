@@ -22,7 +22,7 @@ Run the provided startup script:
 ```bash
 ./start_dev.sh
 ```
-The script will start the backend and frontend. Note the URL printed to the console (commonly http://localhost:8000).
+The script will start the backend and frontend. Note the URL printed to the console (commonly http://localhost:3000).
 
 ### Step 2: Open the web UI and import your data
 
