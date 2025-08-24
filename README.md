@@ -14,7 +14,32 @@ A comprehensive system for processing, analyzing, and visualizing academic paper
 - **Flexible Configuration**: Configurable parameters for different research domains
 - **Modern Web Interface**: React frontend with FastAPI backend for real-time updates
 
-## Quick Start
+## Quick Start (Recommend)
+
+### Step 1: Start the development server
+
+Run the provided startup script:
+```bash
+./start_dev.sh
+```
+The script will start the backend and frontend. Note the URL printed to the console (commonly http://localhost:8000).
+
+### Step 2: Open the web UI and import your data
+
+1. Open the URL shown by the script in your browser.
+2. Import your papers using the web UI:
+  - Use the Import button or drag & drop your file onto the page.
+  - Supported formats:
+    - Zotero CSV — must include an "abstract" column
+    - BibTeX (.bib) — must include an "abstract" field
+
+Important: abstracts are required for AI analysis, tagging, and reliable clustering. If abstracts are missing the system will still import entries but analysis and cluster quality will be reduced.
+
+### Step 3: Review results
+
+After import the app will analyze and cluster your papers. Use the interactive visualizations (scatter/network views, filters, and paper detail panels) to explore and refine the results.
+
+## Run in CLI
 
 ### Step 1: Setup
 ```bash
